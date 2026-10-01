@@ -1,6 +1,5 @@
 from http import HTTPStatus
-
-from simcc_admin.schemas import UserPublic
+from uuid import UUID
 
 
 def test_create_user(client):
@@ -13,23 +12,29 @@ def test_create_user(client):
         },
     )
     assert response.status_code == HTTPStatus.CREATED
-    assert response.json() == {
-        "username": "alice",
-        "email": "alice@example.com",
-        "id": 1,
-    }
+    data = response.json()
+    assert data["username"] == "alice"
+    assert data["email"] == "alice@example.com"
+    assert UUID(data["id"])
 
 
 def test_read_users(client):
-    response = client.get("/users")
+    response = client.get("/users/")
     assert response.status_code == HTTPStatus.OK
-    assert response.json() == {"users": []}
+    body = response.json()
+    assert body["data"] == []
+    assert body["pagination"]["total_items"] == 0
+    assert body["pagination"]["page"] == 1
 
 
 def test_read_users_with_users(client, user):
-    user_schema = UserPublic.model_validate(user).model_dump()
     response = client.get("/users/")
-    assert response.json() == {"users": [user_schema]}
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["username"] == user.username
+    assert body["data"][0]["id"] == str(user.id)
+    assert body["pagination"]["total_items"] == 1
 
 
 def test_update_user(client, user, token):
@@ -46,14 +51,14 @@ def test_update_user(client, user, token):
     assert response.json() == {
         "username": "bob",
         "email": "bob@example.com",
-        "id": user.id,
+        "id": str(user.id),
     }
 
 
 def test_update_integrity_error(client, user, token):
     # Inserindo fausto
     client.post(
-        "/users",
+        "/users/",
         json={
             "username": "fausto",
             "email": "fausto@example.com",
@@ -61,7 +66,7 @@ def test_update_integrity_error(client, user, token):
         },
     )
 
-    # Alterando o user das fixture para fausto
+    # Alterando o user da fixture para fausto
     response_update = client.put(
         f"/users/{user.id}",
         headers={"Authorization": f"Bearer {token}"},

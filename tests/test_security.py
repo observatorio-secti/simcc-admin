@@ -1,4 +1,5 @@
 from http import HTTPStatus
+from uuid import uuid4
 
 from jwt import decode
 
@@ -17,7 +18,7 @@ def test_jwt():
 
 def test_jwt_invalid_token(client):
     response = client.delete(
-        "/users/1", headers={"Authorization": "Bearer token-invalido"}
+        f"/users/{uuid4()}", headers={"Authorization": "Bearer token-invalido"}
     )
 
     assert response.status_code == HTTPStatus.UNAUTHORIZED

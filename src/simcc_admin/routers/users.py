@@ -1,17 +1,21 @@
+import time
 from http import HTTPStatus
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from simcc_admin.database import get_session
 from simcc_admin.models import User
 from simcc_admin.schemas import (
-    FilterPage,
+    GenericEnvelope,
     Message,
-    UserList,
+    Meta,
+    Pagination,
+    Sort,
     UserPublic,
     UserSchema,
 )
@@ -60,20 +64,37 @@ async def create_user(user: UserSchema, session: Session):
     return db_user
 
 
-@router.get("/", response_model=UserList)
-async def read_users(session: Session, filter_users: Annotated[FilterPage, Query()]):
-    query = await session.scalars(
-        select(User).offset(filter_users.offset).limit(filter_users.limit)
-    )
+@router.get("/", response_model=GenericEnvelope[UserPublic])
+async def read_users(
+    session: Session,
+    page: Annotated[int, Query(ge=1)] = 1,
+    per_page: Annotated[int, Query(ge=1, le=100)] = 10,
+):
+    start_time = time.perf_counter()
+    offset = (page - 1) * per_page
 
+    total_items = await session.scalar(select(func.count()).select_from(User)) or 0
+    query = await session.scalars(select(User).offset(offset).limit(per_page))
     users = query.all()
 
-    return {"users": users}
+    took_ms = int((time.perf_counter() - start_time) * 1000)
+
+    return GenericEnvelope[UserPublic](
+        data=users,
+        pagination=Pagination.create(
+            page=page, per_page=per_page, total_items=total_items
+        ),
+        filters_applied={"page": page, "per_page": per_page},
+        sort=Sort(by="created_at", order="asc"),
+        meta=Meta(took_ms=took_ms, cached=False),
+        facets=None,
+        summary=None,
+    )
 
 
 @router.put("/{user_id}", response_model=UserPublic)
 async def update_user(
-    user_id: int,
+    user_id: UUID,
     user: UserSchema,
     session: Session,
     current_user: CurrentUser,
@@ -100,7 +121,7 @@ async def update_user(
 
 @router.delete("/{user_id}", response_model=Message)
 async def delete_user(
-    user_id: int,
+    user_id: UUID,
     session: Session,
     current_user: CurrentUser,
 ):
