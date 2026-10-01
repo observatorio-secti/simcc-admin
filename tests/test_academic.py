@@ -1,11 +1,13 @@
 from http import HTTPStatus
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from simcc_admin.models import Researcher, ResearcherInstitution
+
+# --- Testes de Busca de Pesquisadores ---
 
 
 @pytest.mark.asyncio
@@ -120,6 +122,8 @@ async def test_search_researchers_filter_by_institution(
     assert len(body["data"]) == 1
     assert body["data"][0]["name"] == "Pesquisador UFBA"
     assert body["filters_applied"]["institution_id"] == str(ufba.id)
+    assert len(body["data"][0]["affiliations"]) == 1
+    assert body["data"][0]["affiliations"][0]["institution"]["acronym"] == "UFBA"
 
 
 @pytest.mark.asyncio
@@ -139,6 +143,255 @@ async def test_search_researchers_sort(client, researcher_generator):
     assert names_desc == ["Carlos", "Bruno", "Alice"]
 
 
+# --- Testes de CRUD de Institution ---
+
+
+@pytest.mark.asyncio
+async def test_create_institution_success(client):
+    response = client.post(
+        "/academic/institutions/",
+        json={"name": "Universidade Estadual de Campinas", "acronym": "UNICAMP"},
+    )
+    assert response.status_code == HTTPStatus.CREATED
+    data = response.json()
+    assert data["name"] == "Universidade Estadual de Campinas"
+    assert data["acronym"] == "UNICAMP"
+    assert UUID(data["id"])
+
+
+@pytest.mark.asyncio
+async def test_create_institution_conflict(client, institution_generator):
+    await institution_generator(name="Universidade de São Paulo", acronym="USP")
+
+    # Nome duplicado
+    resp_name = client.post(
+        "/academic/institutions/",
+        json={"name": "Universidade de São Paulo", "acronym": "USP2"},
+    )
+    assert resp_name.status_code == HTTPStatus.CONFLICT
+
+    # Sigla duplicada
+    resp_acronym = client.post(
+        "/academic/institutions/",
+        json={"name": "Outra USP", "acronym": "USP"},
+    )
+    assert resp_acronym.status_code == HTTPStatus.CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_get_institution_success_and_not_found(client, institution_generator):
+    inst = await institution_generator(name="UFMG", acronym="UFMG")
+
+    resp = client.get(f"/academic/institutions/{inst.id}")
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["id"] == str(inst.id)
+    assert resp.json()["acronym"] == "UFMG"
+
+    resp_404 = client.get(f"/academic/institutions/{uuid4()}")
+    assert resp_404.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_list_institutions(client, institution_generator):
+    await institution_generator(name="Universidade Federal do Ceará", acronym="UFC")
+    await institution_generator(name="Universidade Federal do Rio", acronym="UFRJ")
+
+    resp = client.get("/academic/institutions?q=ceará")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert len(body["data"]) == 1
+    assert body["data"][0]["acronym"] == "UFC"
+    assert body["pagination"]["total_items"] == 1
+
+
+@pytest.mark.asyncio
+async def test_update_institution(client, institution_generator):
+    inst1 = await institution_generator(name="UFBA Velha", acronym="UFBAV")
+    await institution_generator(name="Existente", acronym="EXI")
+
+    # Atualização com sucesso
+    resp = client.put(
+        f"/academic/institutions/{inst1.id}",
+        json={"name": "UFBA Nova", "acronym": "UFBAN"},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["name"] == "UFBA Nova"
+    assert resp.json()["acronym"] == "UFBAN"
+
+    # Tentativa de atualizar com nome já em uso por outra instituição
+    resp_conflict = client.put(
+        f"/academic/institutions/{inst1.id}",
+        json={"name": "Existente", "acronym": "UFBAN"},
+    )
+    assert resp_conflict.status_code == HTTPStatus.CONFLICT
+
+    # 404 para ID inexistente
+    resp_404 = client.put(
+        f"/academic/institutions/{uuid4()}",
+        json={"name": "Nao Existe", "acronym": "NE"},
+    )
+    assert resp_404.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_delete_institution(client, institution_generator):
+    inst = await institution_generator(name="Para Deletar", acronym="DEL")
+
+    resp = client.delete(f"/academic/institutions/{inst.id}")
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["message"] == "Institution deleted"
+
+    # Segunda deleção retorna 404
+    resp_404 = client.delete(f"/academic/institutions/{inst.id}")
+    assert resp_404.status_code == HTTPStatus.NOT_FOUND
+
+
+# --- Testes de CRUD de Researcher e Affiliations ---
+
+
+@pytest.mark.asyncio
+async def test_create_researcher_with_institutions(client, institution_generator):
+    inst1 = await institution_generator(name="Inst 1", acronym="I1")
+    inst2 = await institution_generator(name="Inst 2", acronym="I2")
+
+    resp = client.post(
+        "/academic/researchers/",
+        json={
+            "name": "Prof. Doutor",
+            "lattes_id": "1234123412341234",
+            "institution_ids": [str(inst1.id), str(inst2.id)],
+        },
+    )
+    assert resp.status_code == HTTPStatus.CREATED
+    body = resp.json()
+    assert body["name"] == "Prof. Doutor"
+    assert body["lattes_id"] == "1234123412341234"
+    assert len(body["affiliations"]) == 2
+    # Verifica composição do InstitutionRef dentro de cada Affiliation
+    acronyms = {a["institution"]["acronym"] for a in body["affiliations"]}
+    assert acronyms == {"I1", "I2"}
+
+
+@pytest.mark.asyncio
+async def test_create_researcher_conflict(client, researcher_generator):
+    await researcher_generator(name="Original", lattes_id="5555555555555555")
+
+    resp = client.post(
+        "/academic/researchers/",
+        json={"name": "Duplicado", "lattes_id": "5555555555555555"},
+    )
+    assert resp.status_code == HTTPStatus.CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_get_researcher_detail(
+    client,
+    institution_generator,
+    researcher_generator,
+    researcher_institution_generator,
+):
+    inst = await institution_generator(name="Fiocruz", acronym="FIOCRUZ")
+    res = await researcher_generator(name="Cientista", lattes_id="7777777777777777")
+    await researcher_institution_generator(researcher_id=res.id, institution_id=inst.id)
+
+    resp = client.get(f"/academic/researchers/{res.id}")
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body["researcher_id"] == str(res.id)
+    assert body["name"] == "Cientista"
+    assert len(body["affiliations"]) == 1
+    assert body["affiliations"][0]["institution"]["acronym"] == "FIOCRUZ"
+
+    # 404
+    resp_404 = client.get(f"/academic/researchers/{uuid4()}")
+    assert resp_404.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_update_researcher(client, researcher_generator):
+    r1 = await researcher_generator(name="Nome Antigo", lattes_id="8888888888888888")
+    await researcher_generator(name="Outro", lattes_id="9999999999999999")
+
+    # Sucesso
+    resp = client.put(
+        f"/academic/researchers/{r1.id}",
+        json={"name": "Nome Atualizado", "lattes_id": "8888888888888888"},
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["name"] == "Nome Atualizado"
+
+    # Conflito de Lattes ID
+    resp_conflict = client.put(
+        f"/academic/researchers/{r1.id}",
+        json={"name": "Nome Atualizado", "lattes_id": "9999999999999999"},
+    )
+    assert resp_conflict.status_code == HTTPStatus.CONFLICT
+
+    # 404
+    resp_404 = client.put(
+        f"/academic/researchers/{uuid4()}",
+        json={"name": "Fantasma", "lattes_id": "0000000000000000"},
+    )
+    assert resp_404.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_delete_researcher(client, researcher_generator):
+    res = await researcher_generator(name="Para Deletar", lattes_id="4444444444444444")
+
+    resp = client.delete(f"/academic/researchers/{res.id}")
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["message"] == "Researcher deleted"
+
+    resp_404 = client.delete(f"/academic/researchers/{res.id}")
+    assert resp_404.status_code == HTTPStatus.NOT_FOUND
+
+
+# --- Testes de Endpoints Atômicos de Vínculo (Affiliations) ---
+
+
+@pytest.mark.asyncio
+async def test_atomic_affiliation_endpoints(
+    client, institution_generator, researcher_generator
+):
+    inst = await institution_generator(name="Universidade A", acronym="UA")
+    res = await researcher_generator(name="Pesquisador B", lattes_id="3333111122224444")
+
+    # 1. Adicionar vínculo
+    resp_add = client.post(f"/academic/researchers/{res.id}/institutions/{inst.id}")
+    assert resp_add.status_code == HTTPStatus.CREATED
+    data = resp_add.json()
+    assert data["institution"]["id"] == str(inst.id)
+    assert data["institution"]["acronym"] == "UA"
+    assert "created_at" in data
+
+    # 2. Tentar adicionar novamente retorna conflito
+    resp_conflict = client.post(
+        f"/academic/researchers/{res.id}/institutions/{inst.id}"
+    )
+    assert resp_conflict.status_code == HTTPStatus.CONFLICT
+
+    # 3. 404 para entidades inexistentes
+    resp_404_res = client.post(
+        f"/academic/researchers/{uuid4()}/institutions/{inst.id}"
+    )
+    assert resp_404_res.status_code == HTTPStatus.NOT_FOUND
+
+    # 4. Remover vínculo
+    resp_del = client.delete(f"/academic/researchers/{res.id}/institutions/{inst.id}")
+    assert resp_del.status_code == HTTPStatus.OK
+    assert resp_del.json()["message"] == "Affiliation removed"
+
+    # 5. Tentar remover novamente retorna 404
+    resp_del_404 = client.delete(
+        f"/academic/researchers/{res.id}/institutions/{inst.id}"
+    )
+    assert resp_del_404.status_code == HTTPStatus.NOT_FOUND
+
+
+# --- Testes de Integridade do Modelo ---
+
+
 @pytest.mark.asyncio
 async def test_academic_models_integrity(
     session,
@@ -151,11 +404,9 @@ async def test_academic_models_integrity(
         name="Pesquisador 1", lattes_id="0001000100010001"
     )
 
-    # Verifica UUIDs
     assert isinstance(inst1.id, UUID)
     assert isinstance(res1.id, UUID)
 
-    # Vínculo entre pesquisador e instituição
     link = await researcher_institution_generator(
         researcher_id=res1.id, institution_id=inst1.id
     )
@@ -164,14 +415,12 @@ async def test_academic_models_integrity(
     res1_id = res1.id
     inst1_id = inst1.id
 
-    # Tentativa de duplicar o mesmo vínculo viola constraint única
     with pytest.raises(IntegrityError):
         await researcher_institution_generator(
             researcher_id=res1_id, institution_id=inst1_id
         )
     await session.rollback()
 
-    # Deleção em cascata: excluir pesquisador remove o vínculo automaticamente
     res_to_del = await session.scalar(
         select(Researcher).where(Researcher.id == res1_id)
     )

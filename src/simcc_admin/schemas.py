@@ -23,7 +23,7 @@ class Pagination(BaseModel):
 
     @classmethod
     def create(cls, page: int, per_page: int, total_items: int) -> Pagination:
-        total_pages = (total_items + per_page - 1) // per_page if per_page > 0 else 1
+        total_pages = (total_items + per_page - 1) // per_page if per_page > 0 else 0
         return cls(
             page=page,
             per_page=per_page,
@@ -65,12 +65,42 @@ class GenericEnvelope[T](BaseModel):
 # --- Schemas do Domínio Acadêmico ---
 
 
-class InstitutionPublic(BaseModel):
+class InstitutionRef(BaseModel):
     id: UUID
     name: str
     acronym: str
+    model_config = ConfigDict(from_attributes=True)
+
+
+class InstitutionCreate(BaseModel):
+    name: str
+    acronym: str
+
+
+class InstitutionUpdate(BaseModel):
+    name: str
+    acronym: str
+
+
+class InstitutionPublic(InstitutionRef):
+    created_at: datetime
+
+
+class Affiliation(BaseModel):
+    institution: InstitutionRef
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class ResearcherCreate(BaseModel):
+    name: str
+    lattes_id: str
+    institution_ids: list[UUID] = Field(default_factory=list)
+
+
+class ResearcherUpdate(BaseModel):
+    name: str
+    lattes_id: str
 
 
 class ResearcherItem(BaseModel):
@@ -78,7 +108,12 @@ class ResearcherItem(BaseModel):
     name: str
     lattes_id: str
     created_at: datetime
+    affiliations: list[Affiliation] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
+
+
+class ResearcherDetail(ResearcherItem):
+    pass
 
 
 class ResearcherSearchResponse(BaseModel):
