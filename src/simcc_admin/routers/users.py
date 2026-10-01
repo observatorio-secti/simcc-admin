@@ -2,22 +2,22 @@ from http import HTTPStatus
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from simcc_admin.models import User
-from simcc_admin.security import (
-    get_current_user,
-    get_password_hash,
-)
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from simcc_admin.database import get_session
+from simcc_admin.models import User
 from simcc_admin.schemas import (
     FilterPage,
     Message,
     UserList,
     UserPublic,
     UserSchema,
+)
+from simcc_admin.security import (
+    get_current_user,
+    get_password_hash,
 )
 
 router = APIRouter(prefix="/users", tags=["users"])

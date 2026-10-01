@@ -14,7 +14,7 @@ class UserSchema(BaseModel):
 class UserPublic(BaseModel):
     id: int
     username: str
-    email: EmailStr
+    email: EmailStr | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
