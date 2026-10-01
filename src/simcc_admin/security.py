@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from simcc_admin.database import get_session
-from simcc_admin.models import User
+from simcc_admin.models import User, UserRole
 from simcc_admin.settings import Settings
 
 settings = Settings()
@@ -68,3 +68,36 @@ async def get_current_user(
         raise credentials_exception
 
     return user
+
+
+# Hierarquia extensível de permissões de cargos
+ROLE_HIERARCHY: dict[UserRole, set[UserRole]] = {
+    UserRole.ADMIN: {UserRole.ADMIN, UserRole.DEFAULT},
+    UserRole.DEFAULT: {UserRole.DEFAULT},
+}
+
+
+class RequireRole:
+    """Dependência genérica reutilizável para proteção de endpoints por cargos."""
+
+    def __init__(self, *allowed_roles: UserRole, check_hierarchy: bool = True):
+        self.allowed_roles = set(allowed_roles)
+        self.check_hierarchy = check_hierarchy
+
+    async def __call__(
+        self, current_user: Annotated[User, Depends(get_current_user)]
+    ) -> User:
+        effective_roles = (
+            ROLE_HIERARCHY.get(current_user.role, {current_user.role})
+            if self.check_hierarchy
+            else {current_user.role}
+        )
+        if not self.allowed_roles.intersection(effective_roles):
+            raise HTTPException(
+                status_code=HTTPStatus.FORBIDDEN,
+                detail="Not enough permissions",
+            )
+        return current_user
+
+
+AdminUser = Annotated[User, Depends(RequireRole(UserRole.ADMIN))]

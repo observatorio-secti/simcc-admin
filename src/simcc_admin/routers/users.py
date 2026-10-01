@@ -20,6 +20,7 @@ from simcc_admin.schemas import (
     UserSchema,
 )
 from simcc_admin.security import (
+    AdminUser,
     get_current_user,
     get_password_hash,
 )
@@ -64,9 +65,15 @@ async def create_user(user: UserSchema, session: Session):
     return db_user
 
 
+@router.get("/me", response_model=UserPublic)
+async def read_current_user(current_user: CurrentUser):
+    return current_user
+
+
 @router.get("/", response_model=GenericEnvelope[UserPublic])
 async def read_users(
     session: Session,
+    current_user: AdminUser,
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=100)] = 10,
 ):
@@ -99,18 +106,25 @@ async def update_user(
     session: Session,
     current_user: CurrentUser,
 ):
-    if current_user.id != user_id:
+    if not current_user.can_manage_user(user_id):
         raise HTTPException(
             status_code=HTTPStatus.FORBIDDEN, detail="Not enough permissions"
         )
-    try:
-        current_user.username = user.username
-        current_user.password = get_password_hash(user.password)
-        current_user.email = user.email
-        await session.commit()
-        await session.refresh(current_user)
 
-        return current_user
+    target_user = (
+        current_user if current_user.id == user_id else await session.get(User, user_id)
+    )
+    if not target_user:
+        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="User not found")
+
+    try:
+        target_user.username = user.username
+        target_user.password = get_password_hash(user.password)
+        target_user.email = user.email
+        await session.commit()
+        await session.refresh(target_user)
+
+        return target_user
 
     except IntegrityError:
         raise HTTPException(
@@ -125,12 +139,18 @@ async def delete_user(
     session: Session,
     current_user: CurrentUser,
 ):
-    if current_user.id != user_id:
+    if not current_user.can_manage_user(user_id):
         raise HTTPException(
             status_code=HTTPStatus.FORBIDDEN, detail="Not enough permissions"
         )
 
-    await session.delete(current_user)
+    target_user = (
+        current_user if current_user.id == user_id else await session.get(User, user_id)
+    )
+    if not target_user:
+        raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="User not found")
+
+    await session.delete(target_user)
     await session.commit()
 
     return {"message": "User deleted"}

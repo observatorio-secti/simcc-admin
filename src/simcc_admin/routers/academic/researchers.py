@@ -10,7 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from simcc_admin.database import get_session
-from simcc_admin.models import Institution, Researcher, ResearcherInstitution
+from simcc_admin.models import (
+    Institution,
+    Researcher,
+    ResearcherInstitution,
+    UserRole,
+)
 from simcc_admin.schemas import (
     Affiliation,
     FiltersApplied,
@@ -25,8 +30,13 @@ from simcc_admin.schemas import (
     ResearcherUpdate,
     Sort,
 )
+from simcc_admin.security import RequireRole
 
-router = APIRouter(prefix="/researchers", tags=["academic:researchers"])
+router = APIRouter(
+    prefix="/researchers",
+    tags=["academic:researchers"],
+    dependencies=[Depends(RequireRole(UserRole.ADMIN))],
+)
 Session = Annotated[AsyncSession, Depends(get_session)]
 
 

@@ -25,3 +25,8 @@ class Settings(BaseSettings):
     ORCID_CLIENT_SECRET: str = ""
     ORCID_REDIRECT_URI: str = "http://localhost:8000/auth/orcid/callback"
     ORCID_SANDBOX: bool = True
+
+    # Administrador Inicial (Bootstrap)
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_EMAIL: str = "admin@simcc.org"
+    ADMIN_PASSWORD: str = "admin123"

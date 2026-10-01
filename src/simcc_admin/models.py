@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 from typing import ClassVar
 from uuid import UUID, uuid4
 
@@ -16,6 +17,11 @@ from sqlalchemy.orm import (
 table_registry = registry()
 
 
+class UserRole(str, Enum):
+    DEFAULT = "DEFAULT"
+    ADMIN = "ADMIN"
+
+
 @mapped_as_dataclass(table_registry)
 class User:
     __tablename__ = "users"
@@ -29,6 +35,10 @@ class User:
     username: Mapped[str] = mapped_column(unique=True)
     password: Mapped[str | None] = mapped_column(nullable=True, default=None)
     email: Mapped[str | None] = mapped_column(unique=True, nullable=True, default=None)
+    role: Mapped[UserRole] = mapped_column(
+        default=UserRole.DEFAULT,
+        server_default=UserRole.DEFAULT.value,
+    )
     created_at: Mapped[datetime] = mapped_column(init=False, server_default=func.now())
     oauth_accounts: Mapped[list[OAuthAccount]] = relationship(
         init=False,
@@ -36,6 +46,9 @@ class User:
         cascade="all, delete-orphan",
         default_factory=list,
     )
+
+    def can_manage_user(self, target_user_id: UUID) -> bool:
+        return self.role == UserRole.ADMIN or self.id == target_user_id
 
 
 @mapped_as_dataclass(table_registry)

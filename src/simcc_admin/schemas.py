@@ -126,6 +126,8 @@ class ResearcherSearchResponse(BaseModel):
     summary: dict[str, Any] | None = None
 
 
+from simcc_admin.models import UserRole
+
 # --- Schemas de Usuários (com UUID) ---
 
 
@@ -139,6 +141,7 @@ class UserPublic(BaseModel):
     id: UUID
     username: str
     email: EmailStr | None = None
+    role: UserRole = UserRole.DEFAULT
     model_config = ConfigDict(from_attributes=True)
 
 

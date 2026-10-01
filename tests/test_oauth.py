@@ -252,10 +252,11 @@ def test_oauth_callback_success_redirect_to_frontend(client):
 
         # Faz requisição autenticada com o token recebido
         users_resp = client.get(
-            "/users/",
+            "/users/me",
             headers={"Authorization": f"Bearer {token_val}"},
         )
         assert users_resp.status_code == HTTPStatus.OK
+        assert users_resp.json()["email"] == "callback_user@example.com"
 
 
 def test_oauth_callback_provider_error(client):

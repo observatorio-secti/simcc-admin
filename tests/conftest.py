@@ -7,7 +7,7 @@ from testcontainers.postgres import PostgresContainer
 
 from simcc_admin.app import app
 from simcc_admin.database import get_session
-from simcc_admin.models import table_registry
+from simcc_admin.models import UserRole, table_registry
 from simcc_admin.security import get_password_hash
 from tests.factories import (
     InstitutionFactory,
@@ -131,3 +131,31 @@ def token(client, user):
         data={"username": user.email, "password": user.clean_password},
     )
     return response.json()["access_token"]
+
+
+@pytest_asyncio.fixture
+async def admin_user(user_generator):
+    return await user_generator(role=UserRole.ADMIN)
+
+
+@pytest.fixture
+def admin_token(client, admin_user):
+    response = client.post(
+        "/auth/token",
+        data={"username": admin_user.email, "password": admin_user.clean_password},
+    )
+    return response.json()["access_token"]
+
+
+@pytest.fixture
+def admin_client(session, admin_token):
+    def get_session_override():
+        return session
+
+    with TestClient(
+        app, headers={"Authorization": f"Bearer {admin_token}"}
+    ) as test_client:
+        app.dependency_overrides[get_session] = get_session_override
+        yield test_client
+
+    app.dependency_overrides.clear()
