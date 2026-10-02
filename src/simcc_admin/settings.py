@@ -29,4 +29,4 @@ class Settings(BaseSettings):
     # Administrador Inicial (Bootstrap)
     ADMIN_USERNAME: str = "admin"
     ADMIN_EMAIL: str = "admin@simcc.org"
-    ADMIN_PASSWORD: str = "admin123"
+    ADMIN_PASSWORD: str = "admin_secret_password"

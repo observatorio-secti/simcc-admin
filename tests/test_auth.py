@@ -15,6 +15,18 @@ def test_get_token(client, user):
     assert "token_type" in token
 
 
+def test_get_token_with_username(client, user):
+    response = client.post(
+        "/auth/token",
+        data={"username": user.username, "password": user.clean_password},
+    )
+    token = response.json()
+
+    assert response.status_code == HTTPStatus.OK
+    assert "access_token" in token
+    assert "token_type" in token
+
+
 def test_token_expired_after_time(client, user):
     with freeze_time("2023-07-14 12:00:00"):
         response = client.post(
