@@ -10,7 +10,7 @@ services:
     ports:
       - "127.0.0.1:${ADMIN_PORT_DB:-5432}:5432"
 
-  admin_app:
+  admin_api:
     build: .
     image: ${COMPOSE_PROJECT_NAME}_admin
     entrypoint: ./entrypoint.sh
