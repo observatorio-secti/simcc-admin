@@ -20,9 +20,9 @@ services:
       - .env
     restart: always
     environment:
-      DATABASE_URL: postgresql+psycopg://db_user:db_password@db:5432/db
+      DATABASE_URL: postgresql+psycopg://db_user:db_password@admin_db:5432/db
     depends_on:
-      - db
+      - admin_db
 
 volumes:
   pgdata:
