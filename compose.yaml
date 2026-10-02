@@ -12,7 +12,7 @@ services:
 
   admin_app:
     build: .
-    image: ${COMPOSE_PROJECT_NAME}
+    image: ${COMPOSE_PROJECT_NAME}_admin
     entrypoint: ./entrypoint.sh
     ports:
       - "127.0.0.1:${ADMIN_API_PORT:-8000}:8000"
