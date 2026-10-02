@@ -15,7 +15,7 @@ services:
     image: ${COMPOSE_PROJECT_NAME}
     entrypoint: ./entrypoint.sh
     ports:
-      - "127.0.0.1:${APP_DB:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     env_file:
       - .env
     restart: always
