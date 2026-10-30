@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = Field(init=False)
     ALGORITHM: str = Field(init=False)
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(init=False)
+    ADMIN_SERVICE_TOKEN: str = Field(init=False)
 
     # Frontend
     FRONTEND_AUTH_CALLBACK_URL: str = "http://localhost:3000/auth/callback"

@@ -1,9 +1,10 @@
+import secrets
 from datetime import datetime, timedelta
 from http import HTTPStatus
 from typing import Annotated
 from zoneinfo import ZoneInfo
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, Header, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from jwt import DecodeError, ExpiredSignatureError, decode, encode
 from pwdlib import PasswordHash
@@ -17,6 +18,9 @@ from simcc_admin.settings import Settings
 settings = Settings()
 pwd_context = PasswordHash.recommended()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token", refreshUrl="auth/refresh")
+oauth2_optional_scheme = OAuth2PasswordBearer(
+    tokenUrl="auth/token", refreshUrl="auth/refresh", auto_error=False
+)
 
 
 def create_access_token(data: dict):
@@ -37,10 +41,7 @@ def verify_password(plain_password: str, hashed_password: str):
     return pwd_context.verify(plain_password, hashed_password)
 
 
-async def get_current_user(
-    session: Annotated[AsyncSession, Depends(get_session)],
-    token: Annotated[str, Depends(oauth2_scheme)],
-):
+async def get_user_from_raw_token(session: AsyncSession, token: str) -> User:
     credentials_exception = HTTPException(
         status_code=HTTPStatus.UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -68,6 +69,13 @@ async def get_current_user(
         raise credentials_exception
 
     return user
+
+
+async def get_current_user(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    token: Annotated[str, Depends(oauth2_scheme)],
+):
+    return await get_user_from_raw_token(session, token)
 
 
 # Hierarquia extensível de permissões de cargos
@@ -98,6 +106,48 @@ class RequireRole:
                 detail="Not enough permissions",
             )
         return current_user
+
+
+class RequireServiceTokenOrRole:
+    """Permite acesso via X-Service-Token ou por usuário com cargo permitido."""
+
+    def __init__(self, *allowed_roles: UserRole, check_hierarchy: bool = True):
+        self.allowed_roles = set(allowed_roles)
+        self.check_hierarchy = check_hierarchy
+
+    async def __call__(
+        self,
+        session: Annotated[AsyncSession, Depends(get_session)],
+        x_service_token: Annotated[str | None, Header()] = None,
+        token: Annotated[str | None, Depends(oauth2_optional_scheme)] = None,
+    ) -> bool:
+        if x_service_token is not None:
+            if secrets.compare_digest(x_service_token, settings.ADMIN_SERVICE_TOKEN):
+                return True
+            raise HTTPException(
+                status_code=HTTPStatus.UNAUTHORIZED,
+                detail="Invalid service token",
+            )
+
+        if token:
+            user = await get_user_from_raw_token(session, token)
+            effective_roles = (
+                ROLE_HIERARCHY.get(user.role, {user.role})
+                if self.check_hierarchy
+                else {user.role}
+            )
+            if not self.allowed_roles.intersection(effective_roles):
+                raise HTTPException(
+                    status_code=HTTPStatus.FORBIDDEN,
+                    detail="Not enough permissions",
+                )
+            return True
+
+        raise HTTPException(
+            status_code=HTTPStatus.UNAUTHORIZED,
+            detail="Authentication credentials were not provided",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 AdminUser = Annotated[User, Depends(RequireRole(UserRole.ADMIN))]

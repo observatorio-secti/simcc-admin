@@ -37,6 +37,7 @@ class Pagination(BaseModel):
 class FiltersApplied(BaseModel):
     q: str | None = None
     institution_id: UUID | None = None
+    collection_id: UUID | None = None
 
 
 class Sort(BaseModel):
@@ -92,10 +93,52 @@ class Affiliation(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# --- Schemas de Coleções ---
+
+
+class CollectionRef(BaseModel):
+    id: UUID
+    slug: str
+    name: str
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CollectionCreate(BaseModel):
+    slug: str = Field(pattern=r"^[a-z0-9]+(-[a-z0-9]+)*$")
+    name: str = Field(min_length=1)
+    description: str | None = None
+    refresh_interval_days: int = Field(default=1, ge=1)
+
+
+class CollectionUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    refresh_interval_days: int | None = Field(default=None, ge=1)
+    is_default: bool | None = None
+
+
+class CollectionPublic(CollectionRef):
+    description: str | None = None
+    refresh_interval_days: int
+    is_default: bool
+    created_at: datetime
+    researcher_count: int = 0
+
+
+class CollectionMembership(BaseModel):
+    collection: CollectionRef
+    attributes: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ResearcherCreate(BaseModel):
     name: str
     lattes_id: str
     institution_ids: list[UUID] = Field(default_factory=list)
+    collection_ids: list[UUID] = Field(default_factory=list)
 
 
 class ResearcherUpdate(BaseModel):
@@ -109,6 +152,7 @@ class ResearcherItem(BaseModel):
     lattes_id: str
     created_at: datetime
     affiliations: list[Affiliation] = Field(default_factory=list)
+    collections: list[CollectionMembership] = Field(default_factory=list)
     model_config = ConfigDict(from_attributes=True)
 
 

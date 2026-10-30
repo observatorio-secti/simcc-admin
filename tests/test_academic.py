@@ -1,11 +1,19 @@
+import io
 from http import HTTPStatus
 from uuid import UUID, uuid4
 
+import polars as pl
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
-from simcc_admin.models import Researcher, ResearcherInstitution
+from simcc_admin.models import (
+    Collection,
+    Researcher,
+    ResearcherCollection,
+    ResearcherInstitution,
+)
+from simcc_admin.settings import Settings
 
 # --- Testes de RBAC nas Rotas Acadêmicas ---
 
@@ -54,7 +62,11 @@ async def test_search_researchers_empty(admin_client):
     assert body["pagination"]["total_pages"] == 0
     assert body["pagination"]["has_next"] is False
     assert body["pagination"]["has_prev"] is False
-    assert body["filters_applied"] == {"q": None, "institution_id": None}
+    assert body["filters_applied"] == {
+        "q": None,
+        "institution_id": None,
+        "collection_id": None,
+    }
     assert body["sort"] == {"by": "name", "order": "asc"}
     assert "took_ms" in body["meta"]
     assert body["meta"]["cached"] is False
@@ -283,7 +295,9 @@ async def test_delete_institution(admin_client, institution_generator):
 
 
 @pytest.mark.asyncio
-async def test_create_researcher_with_institutions(admin_client, institution_generator):
+async def test_create_researcher_with_institutions(
+    admin_client, institution_generator, default_collection
+):
     inst1 = await institution_generator(name="Inst 1", acronym="I1")
     inst2 = await institution_generator(name="Inst 2", acronym="I2")
 
@@ -306,7 +320,9 @@ async def test_create_researcher_with_institutions(admin_client, institution_gen
 
 
 @pytest.mark.asyncio
-async def test_create_researcher_conflict(admin_client, researcher_generator):
+async def test_create_researcher_conflict(
+    admin_client, researcher_generator, default_collection
+):
     await researcher_generator(name="Original", lattes_id="5555555555555555")
 
     resp = admin_client.post(
@@ -470,3 +486,117 @@ async def test_academic_models_integrity(
         )
     )
     assert remaining_link is None
+
+
+@pytest.mark.asyncio
+async def test_collection_models_integrity(
+    session,
+    collection_generator,
+    researcher_generator,
+    researcher_collection_generator,
+):
+    col1 = await collection_generator(slug="c1", name="C1", is_default=True)
+    res1 = await researcher_generator(name="Pesquisador Col", lattes_id="0002000200020002")
+    col1_id = col1.id
+    res1_id = res1.id
+
+    # 1. Duplicate default collection raises IntegrityError
+    with pytest.raises(IntegrityError):
+        await collection_generator(slug="c2", name="C2", is_default=True)
+    await session.rollback()
+
+    # 2. Check constraint refresh_interval_days >= 1
+    with pytest.raises(IntegrityError):
+        await collection_generator(slug="c3", name="C3", refresh_interval_days=0)
+    await session.rollback()
+
+    # 3. Create link
+    link = await researcher_collection_generator(
+        researcher_id=res1_id, collection_id=col1_id, attributes={"tipo": "bolsa"}
+    )
+    assert isinstance(link.id, UUID)
+    assert link.attributes == {"tipo": "bolsa"}
+
+    # 4. Duplicate (researcher_id, collection_id) raises IntegrityError
+    with pytest.raises(IntegrityError):
+        await researcher_collection_generator(
+            researcher_id=res1_id, collection_id=col1_id
+        )
+    await session.rollback()
+
+    # 5. FK RESTRICT on collection delete when it has members
+    with pytest.raises(IntegrityError):
+        await session.execute(delete(Collection).where(Collection.id == col1_id))
+        await session.commit()
+    await session.rollback()
+
+    # 6. Cascade delete on researcher delete
+    await session.execute(delete(Researcher).where(Researcher.id == res1_id))
+    await session.commit()
+
+    remaining_rc = await session.scalar(
+        select(ResearcherCollection).where(ResearcherCollection.researcher_id == res1_id)
+    )
+    assert remaining_rc is None
+
+
+# --- Testes de Exportação Parquet com X-Service-Token ---
+
+
+def test_export_parquet_unauthorized(client):
+    response = client.get("/academic/researchers/export/parquet")
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+
+
+def test_export_parquet_invalid_service_token(client):
+    response = client.get(
+        "/academic/researchers/export/parquet",
+        headers={"X-Service-Token": "token-totalmente-invalido"},
+    )
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+    assert response.json() == {"detail": "Invalid service token"}
+
+
+@pytest.mark.asyncio
+async def test_export_parquet_with_valid_service_token(client, researcher_generator):
+    settings = Settings()
+    # Cria pesquisadores válidos e um com lattes em branco (espaços)
+    await researcher_generator(name="Valido 1", lattes_id="1111222233334444")
+    await researcher_generator(name="Valido 2", lattes_id="5555666677778888")
+    await researcher_generator(name="Lattes Branco", lattes_id="   ")
+
+    response = client.get(
+        "/academic/researchers/export/parquet",
+        headers={"X-Service-Token": settings.ADMIN_SERVICE_TOKEN},
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert "attachment; filename=" in response.headers["content-disposition"]
+
+    # Lê o Parquet retornado
+    df = pl.read_parquet(io.BytesIO(response.content))
+    assert "lattes_id" in df.columns
+    assert "refresh_interval_days" in df.columns
+    exported_ids = df["lattes_id"].to_list()
+    assert exported_ids == ["1111222233334444", "5555666677778888"]
+
+
+@pytest.mark.asyncio
+async def test_export_parquet_with_admin_jwt(admin_client, researcher_generator):
+    await researcher_generator(name="Admin Export", lattes_id="9999888877776666")
+
+    response = admin_client.get("/academic/researchers/export/parquet")
+    assert response.status_code == HTTPStatus.OK
+    df = pl.read_parquet(io.BytesIO(response.content))
+    assert "9999888877776666" in df["lattes_id"].to_list()
+
+
+def test_export_parquet_does_not_conflict_with_researcher_id(client):
+    # Rota /{researcher_id} com UUID inexistente retorna 401 para usuário anônimo
+    # enquanto /export/parquet também retorna 401 mas não 422 de UUID inválido
+    res_export = client.get(
+        "/academic/researchers/export/parquet",
+        headers={"X-Service-Token": "invalid"},
+    )
+    assert res_export.status_code == HTTPStatus.UNAUTHORIZED
+    assert res_export.json() == {"detail": "Invalid service token"}

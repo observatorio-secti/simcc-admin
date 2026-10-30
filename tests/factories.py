@@ -1,8 +1,10 @@
 import factory
 
 from simcc_admin.models import (
+    Collection,
     Institution,
     Researcher,
+    ResearcherCollection,
     ResearcherInstitution,
     User,
     UserRole,
@@ -41,3 +43,23 @@ class ResearcherInstitutionFactory(factory.Factory):
 
     researcher_id = None
     institution_id = None
+
+
+class CollectionFactory(factory.Factory):
+    class Meta:
+        model = Collection
+
+    slug = factory.Sequence(lambda n: f"collection-{n}")
+    name = factory.Sequence(lambda n: f"Coleção {n}")
+    description = factory.Sequence(lambda n: f"Descrição da coleção {n}")
+    refresh_interval_days = 1
+    is_default = False
+
+
+class ResearcherCollectionFactory(factory.Factory):
+    class Meta:
+        model = ResearcherCollection
+
+    researcher_id = None
+    collection_id = None
+    attributes = factory.LazyFunction(dict)

@@ -10,7 +10,9 @@ from simcc_admin.database import get_session
 from simcc_admin.models import UserRole, table_registry
 from simcc_admin.security import get_password_hash
 from tests.factories import (
+    CollectionFactory,
     InstitutionFactory,
+    ResearcherCollectionFactory,
     ResearcherFactory,
     ResearcherInstitutionFactory,
     UserFactory,
@@ -93,6 +95,37 @@ def researcher_institution_generator(session):
     async def _generate_link(researcher_id, institution_id, **kwargs):
         link = ResearcherInstitutionFactory(
             researcher_id=researcher_id, institution_id=institution_id, **kwargs
+        )
+        session.add(link)
+        await session.commit()
+        await session.refresh(link)
+        return link
+
+    return _generate_link
+
+
+@pytest.fixture
+def collection_generator(session):
+    async def _generate_collection(**kwargs):
+        col = CollectionFactory(**kwargs)
+        session.add(col)
+        await session.commit()
+        await session.refresh(col)
+        return col
+
+    return _generate_collection
+
+
+@pytest_asyncio.fixture
+async def default_collection(collection_generator):
+    return await collection_generator(slug="simcc", name="SimCC", is_default=True)
+
+
+@pytest.fixture
+def researcher_collection_generator(session):
+    async def _generate_link(researcher_id, collection_id, **kwargs):
+        link = ResearcherCollectionFactory(
+            researcher_id=researcher_id, collection_id=collection_id, **kwargs
         )
         session.add(link)
         await session.commit()

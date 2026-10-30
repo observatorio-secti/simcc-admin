@@ -26,16 +26,20 @@ simcc-admin/
 │   ├── database.py         # Configuração do engine e sessão assíncrona (SQLAlchemy)
 │   ├── models.py           # Modelos de banco de dados (mapped_as_dataclass)
 │   ├── schemas.py          # Schemas Pydantic para validação e serialização
-│   ├── security.py         # Hashing de senha (Argon2), criação/validação de JWT
+│   ├── security.py         # Hashing de senha (Argon2), criação/validação de JWT e X-Service-Token
 │   ├── settings.py         # Variáveis de ambiente com pydantic-settings
 │   └── routers/            # Endpoints da aplicação
 │       ├── auth.py         # Autenticação e tokens (/auth)
-│       └── users.py        # CRUD de usuários (/users)
+│       ├── users.py        # CRUD de usuários (/users)
+│       └── academic/       # Gestão acadêmica (instituições e pesquisadores)
+│           ├── institutions.py
+│           └── researchers.py  # CRUD e exportação Parquet (/academic/researchers/export/parquet)
 ├── tests/
 │   ├── conftest.py         # Fixtures globais (PostgresContainer, client, session, token)
 │   ├── test_app.py         # Testes de rotas raiz
 │   ├── test_auth.py        # Testes de autenticação e expiração de token
 │   ├── test_security.py    # Testes unitários de hashing e JWT
+│   ├── test_academic.py    # Testes das rotas acadêmicas e exportação Parquet
 │   └── test_users.py       # Testes de integração do CRUD de usuários
 └── pyproject.toml          # Dependências, configurações de ferramentas e tarefas Poe
 ```
@@ -76,3 +80,31 @@ simcc-admin/
    ```python
    app.include_router(novo_router.router)
    ```
+
+---
+
+## ⚙️ Configuração (`.env`)
+
+| Variável | Obrigatória | Descrição |
+|---|:---:|---|
+| `DATABASE_URL` | Sim | URL assíncrona do PostgreSQL (`postgresql+psycopg://...`) |
+| `SECRET_KEY` | Sim | Chave de assinatura dos tokens JWT |
+| `ALGORITHM` | Sim | Algoritmo de hash JWT (ex.: `HS256`) |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | Sim | Tempo de expiração do token de acesso (ex.: `30`) |
+| `ADMIN_SERVICE_TOKEN` | Sim | Token secreto de serviço (*Machine-to-Machine*) para integrações internas (ex.: `simcc-etl`) |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Não | Credenciais para bootstrap do primeiro usuário administrador |
+
+---
+
+## 🌐 Endpoints Principais
+
+### Autenticação e Usuários
+* `POST /auth/token`: Login de usuário (retorna JWT)
+* `POST /auth/refresh`: Renovação de token de acesso
+* `GET /users`: Listagem de usuários (requer `ADMIN`)
+* `POST /users`: Criação de novo usuário
+
+### Gestão Acadêmica (`/academic`)
+* `GET /academic/institutions`: Listagem paginada de instituições
+* `GET /academic/researchers`: Listagem paginada de pesquisadores
+* `GET /academic/researchers/export/parquet`: Exportação binária em Parquet com `lattes_id` dos pesquisadores ativos. Autenticação via header `X-Service-Token` (ou token JWT de `ADMIN`).

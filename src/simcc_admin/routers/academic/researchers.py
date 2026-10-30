@@ -1,9 +1,11 @@
+import io
 import time
 from http import HTTPStatus
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import polars as pl
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,13 +13,17 @@ from sqlalchemy.orm import selectinload
 
 from simcc_admin.database import get_session
 from simcc_admin.models import (
+    Collection,
     Institution,
     Researcher,
+    ResearcherCollection,
     ResearcherInstitution,
     UserRole,
 )
 from simcc_admin.schemas import (
     Affiliation,
+    CollectionMembership,
+    CollectionRef,
     FiltersApplied,
     InstitutionRef,
     Message,
@@ -30,14 +36,16 @@ from simcc_admin.schemas import (
     ResearcherUpdate,
     Sort,
 )
-from simcc_admin.security import RequireRole
+from simcc_admin.security import RequireRole, RequireServiceTokenOrRole
 
 router = APIRouter(
     prefix="/researchers",
     tags=["academic:researchers"],
-    dependencies=[Depends(RequireRole(UserRole.ADMIN))],
 )
 Session = Annotated[AsyncSession, Depends(get_session)]
+
+require_admin = Depends(RequireRole(UserRole.ADMIN))
+require_service_or_admin = Depends(RequireServiceTokenOrRole(UserRole.ADMIN))
 
 
 def _build_affiliations(
@@ -53,13 +61,94 @@ def _build_affiliations(
     ]
 
 
-@router.get("", response_model=ResearcherSearchResponse)
-@router.get("/", response_model=ResearcherSearchResponse, include_in_schema=False)
+def _build_collections(
+    links: list[ResearcherCollection],
+) -> list[CollectionMembership]:
+    valid_links = [link for link in links if link.collection is not None]
+    valid_links.sort(key=lambda x: x.collection.name)
+    return [
+        CollectionMembership(
+            collection=CollectionRef.model_validate(link.collection),
+            attributes=link.attributes or {},
+            created_at=link.created_at,
+        )
+        for link in valid_links
+    ]
+
+
+@router.get(
+    "/export/parquet",
+    dependencies=[require_service_or_admin],
+    summary="Exporta lattes_id dos pesquisadores em formato Parquet",
+)
+async def export_researchers_parquet(
+    session: Session,
+    collection: Annotated[str | None, Query(description="Filtrar por slug da coleção")] = None,
+) -> Response:
+    stmt = (
+        select(
+            Researcher.lattes_id,
+            func.coalesce(func.min(Collection.refresh_interval_days), 1).label(
+                "refresh_interval_days"
+            ),
+        )
+        .outerjoin(
+            ResearcherCollection,
+            ResearcherCollection.researcher_id == Researcher.id,
+        )
+        .outerjoin(
+            Collection,
+            Collection.id == ResearcherCollection.collection_id,
+        )
+        .where(
+            Researcher.lattes_id.is_not(None),
+            func.trim(Researcher.lattes_id) != "",
+        )
+    )
+
+    if collection and collection.strip():
+        stmt = stmt.where(Collection.slug == collection.strip())
+
+    stmt = stmt.group_by(Researcher.lattes_id).order_by(Researcher.lattes_id)
+    result = await session.execute(stmt)
+    rows = result.all()
+
+    lattes_ids = [row[0] for row in rows]
+    refresh_intervals = [int(row[1]) for row in rows]
+
+    df = pl.DataFrame(
+        {
+            "lattes_id": lattes_ids,
+            "refresh_interval_days": refresh_intervals,
+        }
+    )
+    buf = io.BytesIO()
+    df.write_parquet(buf, compression="zstd")
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": 'attachment; filename="researchers.parquet"'
+        },
+    )
+
+
+@router.get("", response_model=ResearcherSearchResponse, dependencies=[require_admin])
+@router.get(
+    "/",
+    response_model=ResearcherSearchResponse,
+    include_in_schema=False,
+    dependencies=[require_admin],
+)
 async def search_researchers(
     session: Session,
     q: Annotated[str | None, Query(description="Busca por nome ou lattes_id")] = None,
     institution_id: Annotated[
         UUID | None, Query(description="Filtro por instituição")
+    ] = None,
+    collection_id: Annotated[
+        UUID | None, Query(description="Filtro por coleção")
     ] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     per_page: Annotated[int, Query(ge=1, le=100)] = 20,
@@ -71,19 +160,38 @@ async def search_researchers(
     query = select(Researcher).options(
         selectinload(Researcher.institutions).selectinload(
             ResearcherInstitution.institution
-        )
+        ),
+        selectinload(Researcher.collections).selectinload(
+            ResearcherCollection.collection
+        ),
     )
-    count_query = select(func.count(func.distinct(Researcher.id))).select_from(
-        Researcher
-    )
+    count_query = select(func.count(Researcher.id)).select_from(Researcher)
 
     if institution_id:
-        query = query.join(ResearcherInstitution).where(
-            ResearcherInstitution.institution_id == institution_id
+        inst_filter = (
+            select(1)
+            .select_from(ResearcherInstitution)
+            .where(
+                ResearcherInstitution.researcher_id == Researcher.id,
+                ResearcherInstitution.institution_id == institution_id,
+            )
+            .exists()
         )
-        count_query = count_query.join(ResearcherInstitution).where(
-            ResearcherInstitution.institution_id == institution_id
+        query = query.where(inst_filter)
+        count_query = count_query.where(inst_filter)
+
+    if collection_id:
+        coll_filter = (
+            select(1)
+            .select_from(ResearcherCollection)
+            .where(
+                ResearcherCollection.researcher_id == Researcher.id,
+                ResearcherCollection.collection_id == collection_id,
+            )
+            .exists()
         )
+        query = query.where(coll_filter)
+        count_query = count_query.where(coll_filter)
 
     if q:
         search_filter = (Researcher.name.ilike(f"%{q}%")) | (
@@ -114,6 +222,7 @@ async def search_researchers(
             lattes_id=r.lattes_id,
             created_at=r.created_at,
             affiliations=_build_affiliations(r.institutions),
+            collections=_build_collections(r.collections),
         )
         for r in researchers
     ]
@@ -123,7 +232,9 @@ async def search_researchers(
         pagination=Pagination.create(
             page=page, per_page=per_page, total_items=total_items
         ),
-        filters_applied=FiltersApplied(q=q, institution_id=institution_id),
+        filters_applied=FiltersApplied(
+            q=q, institution_id=institution_id, collection_id=collection_id
+        ),
         sort=Sort(by=sort_by, order=sort_order),
         meta=Meta(took_ms=took_ms, cached=False),
         facets=None,
@@ -131,14 +242,21 @@ async def search_researchers(
     )
 
 
-@router.get("/{researcher_id}", response_model=ResearcherDetail)
+@router.get(
+    "/{researcher_id}",
+    response_model=ResearcherDetail,
+    dependencies=[require_admin],
+)
 async def get_researcher(researcher_id: UUID, session: Session):
     query = (
         select(Researcher)
         .options(
             selectinload(Researcher.institutions).selectinload(
                 ResearcherInstitution.institution
-            )
+            ),
+            selectinload(Researcher.collections).selectinload(
+                ResearcherCollection.collection
+            ),
         )
         .where(Researcher.id == researcher_id)
     )
@@ -154,15 +272,22 @@ async def get_researcher(researcher_id: UUID, session: Session):
         lattes_id=researcher.lattes_id,
         created_at=researcher.created_at,
         affiliations=_build_affiliations(researcher.institutions),
+        collections=_build_collections(researcher.collections),
     )
 
 
-@router.post("", status_code=HTTPStatus.CREATED, response_model=ResearcherDetail)
+@router.post(
+    "",
+    status_code=HTTPStatus.CREATED,
+    response_model=ResearcherDetail,
+    dependencies=[require_admin],
+)
 @router.post(
     "/",
     status_code=HTTPStatus.CREATED,
     response_model=ResearcherDetail,
     include_in_schema=False,
+    dependencies=[require_admin],
 )
 async def create_researcher(payload: ResearcherCreate, session: Session):
     existing = await session.scalar(
@@ -174,9 +299,42 @@ async def create_researcher(payload: ResearcherCreate, session: Session):
             detail="Researcher with this Lattes ID already exists",
         )
 
+    # Validação de coleções antes de salvar qualquer registro
+    target_collections: list[Collection] = []
+    if payload.collection_ids:
+        for col_id in payload.collection_ids:
+            col = await session.scalar(
+                select(Collection).where(Collection.id == col_id)
+            )
+            if not col:
+                raise HTTPException(
+                    status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
+                    detail=f"Collection {col_id} not found",
+                )
+            target_collections.append(col)
+    else:
+        default_col = await session.scalar(
+            select(Collection).where(Collection.is_default.is_(True))
+        )
+        if not default_col:
+            raise HTTPException(
+                status_code=HTTPStatus.UNPROCESSABLE_ENTITY,
+                detail="No default collection configured",
+            )
+        target_collections.append(default_col)
+
     researcher = Researcher(name=payload.name, lattes_id=payload.lattes_id)
     session.add(researcher)
     await session.flush()
+
+    # Vincula coleções
+    for col in target_collections:
+        col_link = ResearcherCollection(
+            researcher_id=researcher.id,
+            collection_id=col.id,
+            attributes={},
+        )
+        session.add(col_link)
 
     # Vincula instituições caso enviadas
     for inst_id in payload.institution_ids:
@@ -190,12 +348,14 @@ async def create_researcher(payload: ResearcherCreate, session: Session):
             session.add(link)
 
     await session.commit()
-
-    # Recarrega com relacionamentos
     return await get_researcher(researcher.id, session)
 
 
-@router.put("/{researcher_id}", response_model=ResearcherDetail)
+@router.put(
+    "/{researcher_id}",
+    response_model=ResearcherDetail,
+    dependencies=[require_admin],
+)
 async def update_researcher(
     researcher_id: UUID, payload: ResearcherUpdate, session: Session
 ):
@@ -220,7 +380,11 @@ async def update_researcher(
         ) from e
 
 
-@router.delete("/{researcher_id}", response_model=Message)
+@router.delete(
+    "/{researcher_id}",
+    response_model=Message,
+    dependencies=[require_admin],
+)
 async def delete_researcher(researcher_id: UUID, session: Session):
     researcher = await session.scalar(
         select(Researcher).where(Researcher.id == researcher_id)
@@ -236,13 +400,14 @@ async def delete_researcher(researcher_id: UUID, session: Session):
     return {"message": "Researcher deleted"}
 
 
-# --- Rotas de Gerenciamento de Vínculos (Affiliations) ---
+# --- Rotas de Gerenciamento de Vínculos Institucionais (Affiliations) ---
 
 
 @router.post(
     "/{researcher_id}/institutions/{institution_id}",
     status_code=HTTPStatus.CREATED,
     response_model=Affiliation,
+    dependencies=[require_admin],
 )
 async def add_affiliation(researcher_id: UUID, institution_id: UUID, session: Session):
     researcher = await session.scalar(
@@ -286,7 +451,11 @@ async def add_affiliation(researcher_id: UUID, institution_id: UUID, session: Se
     )
 
 
-@router.delete("/{researcher_id}/institutions/{institution_id}", response_model=Message)
+@router.delete(
+    "/{researcher_id}/institutions/{institution_id}",
+    response_model=Message,
+    dependencies=[require_admin],
+)
 async def remove_affiliation(
     researcher_id: UUID, institution_id: UUID, session: Session
 ):
@@ -305,3 +474,126 @@ async def remove_affiliation(
     await session.commit()
 
     return {"message": "Affiliation removed"}
+
+
+# --- Rotas de Gerenciamento de Pertencimento a Coleções (Collections) ---
+
+
+@router.post(
+    "/{researcher_id}/collections/{collection_id}",
+    status_code=HTTPStatus.CREATED,
+    response_model=CollectionMembership,
+    dependencies=[require_admin],
+)
+async def add_researcher_to_collection(
+    researcher_id: UUID,
+    collection_id: UUID,
+    session: Session,
+    payload: dict[str, Any] = Body(default_factory=dict),
+):
+    researcher = await session.scalar(
+        select(Researcher).where(Researcher.id == researcher_id)
+    )
+    if not researcher:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail="Researcher not found"
+        )
+
+    collection = await session.scalar(
+        select(Collection).where(Collection.id == collection_id)
+    )
+    if not collection:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND, detail="Collection not found"
+        )
+
+    existing = await session.scalar(
+        select(ResearcherCollection).where(
+            ResearcherCollection.researcher_id == researcher_id,
+            ResearcherCollection.collection_id == collection_id,
+        )
+    )
+    if existing:
+        raise HTTPException(
+            status_code=HTTPStatus.CONFLICT,
+            detail="Researcher already belongs to this collection",
+        )
+
+    attributes = payload.get("attributes", {}) if isinstance(payload, dict) else {}
+    link = ResearcherCollection(
+        researcher_id=researcher_id,
+        collection_id=collection_id,
+        attributes=attributes,
+    )
+    session.add(link)
+    await session.commit()
+    await session.refresh(link)
+
+    return CollectionMembership(
+        collection=CollectionRef.model_validate(collection),
+        attributes=link.attributes or {},
+        created_at=link.created_at,
+    )
+
+
+@router.put(
+    "/{researcher_id}/collections/{collection_id}",
+    response_model=CollectionMembership,
+    dependencies=[require_admin],
+)
+async def update_researcher_collection_attributes(
+    researcher_id: UUID,
+    collection_id: UUID,
+    session: Session,
+    payload: dict[str, Any] = Body(default_factory=dict),
+):
+    link = await session.scalar(
+        select(ResearcherCollection)
+        .options(selectinload(ResearcherCollection.collection))
+        .where(
+            ResearcherCollection.researcher_id == researcher_id,
+            ResearcherCollection.collection_id == collection_id,
+        )
+    )
+    if not link:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail="Researcher does not belong to this collection",
+        )
+
+    attributes = payload.get("attributes", {}) if isinstance(payload, dict) else {}
+    link.attributes = attributes
+    await session.commit()
+    await session.refresh(link)
+
+    return CollectionMembership(
+        collection=CollectionRef.model_validate(link.collection),
+        attributes=link.attributes or {},
+        created_at=link.created_at,
+    )
+
+
+@router.delete(
+    "/{researcher_id}/collections/{collection_id}",
+    response_model=Message,
+    dependencies=[require_admin],
+)
+async def remove_researcher_from_collection(
+    researcher_id: UUID, collection_id: UUID, session: Session
+):
+    link = await session.scalar(
+        select(ResearcherCollection).where(
+            ResearcherCollection.researcher_id == researcher_id,
+            ResearcherCollection.collection_id == collection_id,
+        )
+    )
+    if not link:
+        raise HTTPException(
+            status_code=HTTPStatus.NOT_FOUND,
+            detail="Researcher does not belong to this collection",
+        )
+
+    await session.delete(link)
+    await session.commit()
+
+    return {"message": "Collection membership removed"}
