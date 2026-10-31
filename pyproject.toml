@@ -52,7 +52,7 @@ format.sequence = [
   { cmd = "ruff check --fix" },
   { cmd = "ruff format" },
 ]
-serve = "fastapi dev src/simcc_admin/app.py"
+serve = "fastapi dev src/simcc_admin/app.py --port 8009"
 test.sequence = [
   "lint",
   { cmd = "pytest -s -x -vv $POE_EXTRA_ARGS" },
