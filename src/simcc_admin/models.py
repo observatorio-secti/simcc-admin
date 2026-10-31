@@ -30,55 +30,6 @@ class UserRole(str, Enum):
     ADMIN = "ADMIN"
 
 
-@mapped_as_dataclass(table_registry)
-class User:
-    __tablename__ = "users"
-
-    id: Mapped[UUID] = mapped_column(
-        init=False,
-        primary_key=True,
-        default_factory=uuid4,
-        server_default=func.gen_random_uuid(),
-    )
-    username: Mapped[str] = mapped_column(unique=True)
-    password: Mapped[str | None] = mapped_column(nullable=True, default=None)
-    email: Mapped[str | None] = mapped_column(unique=True, nullable=True, default=None)
-    role: Mapped[UserRole] = mapped_column(
-        default=UserRole.DEFAULT,
-        server_default=UserRole.DEFAULT.value,
-    )
-    created_at: Mapped[datetime] = mapped_column(init=False, server_default=func.now())
-    oauth_accounts: Mapped[list[OAuthAccount]] = relationship(
-        init=False,
-        back_populates="user",
-        cascade="all, delete-orphan",
-        default_factory=list,
-    )
-
-    def can_manage_user(self, target_user_id: UUID) -> bool:
-        return self.role == UserRole.ADMIN or self.id == target_user_id
-
-
-@mapped_as_dataclass(table_registry)
-class OAuthAccount:
-    __tablename__ = "oauth_accounts"
-    __table_args__ = (
-        UniqueConstraint("provider", "provider_user_id", name="uq_provider_user"),
-    )
-
-    id: Mapped[UUID] = mapped_column(
-        init=False,
-        primary_key=True,
-        default_factory=uuid4,
-        server_default=func.gen_random_uuid(),
-    )
-    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
-    provider: Mapped[str]
-    provider_user_id: Mapped[str]
-    created_at: Mapped[datetime] = mapped_column(init=False, server_default=func.now())
-    user: Mapped[User] = relationship(init=False, back_populates="oauth_accounts")
-
-
 # --- Schema Academic ---
 
 

@@ -489,8 +489,9 @@ async def add_researcher_to_collection(
     researcher_id: UUID,
     collection_id: UUID,
     session: Session,
-    payload: dict[str, Any] = Body(default_factory=dict),
+    payload: Annotated[dict[str, Any] | None, Body()] = None,
 ):
+    attrs = payload or {}
     researcher = await session.scalar(
         select(Researcher).where(Researcher.id == researcher_id)
     )
@@ -519,7 +520,7 @@ async def add_researcher_to_collection(
             detail="Researcher already belongs to this collection",
         )
 
-    attributes = payload.get("attributes", {}) if isinstance(payload, dict) else {}
+    attributes = attrs.get("attributes", {}) if isinstance(attrs, dict) else {}
     link = ResearcherCollection(
         researcher_id=researcher_id,
         collection_id=collection_id,
@@ -545,8 +546,9 @@ async def update_researcher_collection_attributes(
     researcher_id: UUID,
     collection_id: UUID,
     session: Session,
-    payload: dict[str, Any] = Body(default_factory=dict),
+    payload: Annotated[dict[str, Any] | None, Body()] = None,
 ):
+    attrs = payload or {}
     link = await session.scalar(
         select(ResearcherCollection)
         .options(selectinload(ResearcherCollection.collection))
@@ -561,7 +563,7 @@ async def update_researcher_collection_attributes(
             detail="Researcher does not belong to this collection",
         )
 
-    attributes = payload.get("attributes", {}) if isinstance(payload, dict) else {}
+    attributes = attrs.get("attributes", {}) if isinstance(attrs, dict) else {}
     link.attributes = attributes
     await session.commit()
     await session.refresh(link)

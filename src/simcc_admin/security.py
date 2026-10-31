@@ -1,47 +1,76 @@
 import secrets
-from datetime import datetime, timedelta
+from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Annotated
-from zoneinfo import ZoneInfo
+from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException
 from fastapi.security import OAuth2PasswordBearer
-from jwt import DecodeError, ExpiredSignatureError, decode, encode
-from pwdlib import PasswordHash
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from jwt import (
+    DecodeError,
+    ExpiredSignatureError,
+    InvalidTokenError,
+    PyJWKClient,
+    decode,
+)
 
-from simcc_admin.database import get_session
-from simcc_admin.models import User, UserRole
+from simcc_admin.models import UserRole
 from simcc_admin.settings import Settings
 
 settings = Settings()
-pwd_context = PasswordHash.recommended()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token", refreshUrl="auth/refresh")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/token")
 oauth2_optional_scheme = OAuth2PasswordBearer(
-    tokenUrl="auth/token", refreshUrl="auth/refresh", auto_error=False
+    tokenUrl="auth/token", auto_error=False
 )
 
+_jwks_client: PyJWKClient | None = None
 
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.now(tz=ZoneInfo("UTC")) + timedelta(
-        minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
+
+def get_jwks_client() -> PyJWKClient:
+    global _jwks_client
+    if _jwks_client is None:
+        _jwks_client = PyJWKClient(
+            settings.IDP_JWKS_URL, cache_keys=True, max_cached_keys=16
+        )
+    return _jwks_client
+
+
+@dataclass
+class AuthenticatedUser:
+    """Representação em memória do usuário autenticado validado via token do IdP."""
+
+    id: UUID
+    email: str | None
+    name: str | None
+    role: UserRole
+
+
+def decode_idp_token(token: str) -> dict:
+    """Decodifica e valida a assinatura RS256 do token emitido pelo Observatório IdP."""
+    if settings.IDP_PUBLIC_KEY_PEM.strip():
+        return decode(
+            token,
+            settings.IDP_PUBLIC_KEY_PEM.strip(),
+            algorithms=["RS256"],
+            issuer=settings.IDP_ISSUER,
+            options={"verify_aud": bool(settings.IDP_AUDIENCE)},
+            audience=settings.IDP_AUDIENCE,
+        )
+
+    client = get_jwks_client()
+    signing_key = client.get_signing_key_from_jwt(token)
+    return decode(
+        token,
+        signing_key.key,
+        algorithms=["RS256"],
+        issuer=settings.IDP_ISSUER,
+        options={"verify_aud": bool(settings.IDP_AUDIENCE)},
+        audience=settings.IDP_AUDIENCE,
     )
-    to_encode.update({"exp": expire})
-    encoded_jwt = encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
-    return encoded_jwt
 
 
-def get_password_hash(password: str):
-    return pwd_context.hash(password)
-
-
-def verify_password(plain_password: str, hashed_password: str):
-    return pwd_context.verify(plain_password, hashed_password)
-
-
-async def get_user_from_raw_token(session: AsyncSession, token: str) -> User:
+async def get_user_from_raw_token(token: str) -> AuthenticatedUser:
+    """Extrai e valida os dados de identidade diretamente do token RS256 de forma stateless."""
     credentials_exception = HTTPException(
         status_code=HTTPStatus.UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -49,33 +78,31 @@ async def get_user_from_raw_token(session: AsyncSession, token: str) -> User:
     )
 
     try:
-        payload = decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        payload = decode_idp_token(token)
         subject = payload.get("sub")
-
         if not subject:
             raise credentials_exception
-
-    except DecodeError:
+        user_id = UUID(str(subject))
+    except (DecodeError, ExpiredSignatureError, InvalidTokenError, ValueError):
         raise credentials_exception
 
-    except ExpiredSignatureError:
-        raise credentials_exception
+    email = payload.get("email")
+    name = payload.get("name")
+    raw_role = payload.get("role", "DEFAULT")
+    role = UserRole.ADMIN if str(raw_role).upper() == "ADMIN" else UserRole.DEFAULT
 
-    user = await session.scalar(
-        select(User).where((User.email == subject) | (User.username == subject))
+    return AuthenticatedUser(
+        id=user_id,
+        email=email,
+        name=name,
+        role=role,
     )
-
-    if not user:
-        raise credentials_exception
-
-    return user
 
 
 async def get_current_user(
-    session: Annotated[AsyncSession, Depends(get_session)],
     token: Annotated[str, Depends(oauth2_scheme)],
-):
-    return await get_user_from_raw_token(session, token)
+) -> AuthenticatedUser:
+    return await get_user_from_raw_token(token)
 
 
 # Hierarquia extensível de permissões de cargos
@@ -93,8 +120,8 @@ class RequireRole:
         self.check_hierarchy = check_hierarchy
 
     async def __call__(
-        self, current_user: Annotated[User, Depends(get_current_user)]
-    ) -> User:
+        self, current_user: Annotated[AuthenticatedUser, Depends(get_current_user)]
+    ) -> AuthenticatedUser:
         effective_roles = (
             ROLE_HIERARCHY.get(current_user.role, {current_user.role})
             if self.check_hierarchy
@@ -117,7 +144,6 @@ class RequireServiceTokenOrRole:
 
     async def __call__(
         self,
-        session: Annotated[AsyncSession, Depends(get_session)],
         x_service_token: Annotated[str | None, Header()] = None,
         token: Annotated[str | None, Depends(oauth2_optional_scheme)] = None,
     ) -> bool:
@@ -130,7 +156,7 @@ class RequireServiceTokenOrRole:
             )
 
         if token:
-            user = await get_user_from_raw_token(session, token)
+            user = await get_user_from_raw_token(token)
             effective_roles = (
                 ROLE_HIERARCHY.get(user.role, {user.role})
                 if self.check_hierarchy
@@ -150,4 +176,4 @@ class RequireServiceTokenOrRole:
         )
 
 
-AdminUser = Annotated[User, Depends(RequireRole(UserRole.ADMIN))]
+AdminUser = Annotated[AuthenticatedUser, Depends(RequireRole(UserRole.ADMIN))]

@@ -1,6 +1,5 @@
 import csv
 import logging
-import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -13,7 +12,6 @@ from simcc_admin.models import (
     Institution,
     Researcher,
     ResearcherCollection,
-    ResearcherInstitution,
 )
 from simcc_admin.settings import Settings
 
@@ -223,16 +221,15 @@ def run_seed(
 
         # 4. Conecta no banco fomento e extrai pesquisadores com Lattes
         logger.info("Consultando pesquisadores com Lattes no banco fomento: %s", fomento_dsn)
-        with psycopg.connect(fomento_dsn) as f_conn:
-            with f_conn.cursor() as cur:
-                cur.execute(
-                    """
+        with psycopg.connect(fomento_dsn) as f_conn, f_conn.cursor() as cur:
+            cur.execute(
+                """
                     SELECT DISTINCT trim(lattes)
                     FROM public.pesquisadores
                     WHERE lattes IS NOT NULL AND trim(lattes) <> '';
                     """
-                )
-                fomento_lattes_ids = [row[0] for row in cur.fetchall() if row[0]]
+            )
+            fomento_lattes_ids = [row[0] for row in cur.fetchall() if row[0]]
 
         logger.info("Total de Lattes únicos encontrados no Fomento: %d", len(fomento_lattes_ids))
 
