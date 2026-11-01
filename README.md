@@ -13,6 +13,7 @@ Módulo administrativo do ecossistema SimCC focado em gestão acadêmica de inst
 | `poetry run pytest` | Roda a suíte de testes unitários e de integração |
 | `poetry run poe lint` | Executa a verificação de código com Ruff |
 | `poetry run poe format` | Aplica correções e formatação de código com Ruff |
+| `poetry run python -m src.simcc_admin.import_institution_csvs` | Sincroniza/corrige pesquisadores e vínculos a partir dos CSVs oficiais das instituições |
 
 ---
 
@@ -21,13 +22,15 @@ Módulo administrativo do ecossistema SimCC focado em gestão acadêmica de inst
 ```text
 simcc-admin/
 ├── src/simcc_admin/
-│   ├── app.py              # Ponto de entrada FastAPI e registro de rotas
-│   ├── database.py         # Configuração do engine e sessão assíncrona (SQLAlchemy)
-│   ├── models.py           # Modelos acadêmicos (academic.institutions, academic.researchers)
-│   ├── schemas.py          # Schemas Pydantic para validação e serialização
-│   ├── security.py         # Validação stateless de JWT RS256 via JWKS (PyJWKClient) e X-Service-Token
-│   ├── settings.py         # Variáveis de ambiente com pydantic-settings
-│   └── routers/            # Endpoints da aplicação
+│   ├── app.py                      # Ponto de entrada FastAPI e registro de rotas
+│   ├── database.py                 # Configuração do engine e sessão assíncrona (SQLAlchemy)
+│   ├── models.py                   # Modelos acadêmicos (academic.institutions, academic.researchers)
+│   ├── schemas.py                  # Schemas Pydantic para validação e serialização
+│   ├── security.py                 # Validação stateless de JWT RS256 via JWKS (PyJWKClient) e X-Service-Token
+│   ├── settings.py                 # Variáveis de ambiente com pydantic-settings
+│   ├── bootstrap.py                # Inicialização da coleção padrão simcc
+│   ├── import_institution_csvs.py  # Sincronização dos CSVs institucionais anotados (UFOB, EBMSP, UFRB)
+│   └── routers/                    # Endpoints da aplicação
 │       └── academic/       # Gestão acadêmica (instituições e pesquisadores)
 │           ├── institutions.py
 │           └── researchers.py  # CRUD e exportação Parquet (/academic/researchers/export/parquet)
