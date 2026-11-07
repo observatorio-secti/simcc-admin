@@ -1,43 +1,7 @@
 services:
-  admin_db:
-    image: pgvector/pgvector:pg17
-    container_name: simcc_admin_db
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    environment:
-      POSTGRES_USER: db_user
-      POSTGRES_DB: db
-      POSTGRES_PASSWORD: db_password
-    ports:
-      - "127.0.0.1:${ADMIN_PORT_DB:-5433}:5432"
-    networks:
-      - simcc-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U db_user -d db"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
   admin_api:
     build: .
-    image: ${COMPOSE_PROJECT_NAME:-simcc}_admin
     entrypoint: ./entrypoint.sh
     ports:
-      - "127.0.0.1:${ADMIN_API_PORT:-8009}:8000"
-    env_file:
-      - .env
-    restart: always
-    environment:
-      DATABASE_URL: postgresql+psycopg://db_user:db_password@admin_db:5432/db
-    networks:
-      - simcc-network
-    depends_on:
-      admin_db:
-        condition: service_healthy
-
-networks:
-  simcc-network:
-    external: true
-
-volumes:
-  pgdata:
+      - "127.0.0.1:${ADMIN_API_PORT}:8000"
+    env_file: .env
