@@ -7,7 +7,7 @@ class Settings(BaseSettings):
         env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
 
-    DATABASE_URL: str = Field(init=False)
+    ADMIN_DATABASE_URL: str = Field(init=False)
     ADMIN_SERVICE_TOKEN: str = Field(default="dev-service-token")
 
     # Observatório IdP (Central Identity Provider)

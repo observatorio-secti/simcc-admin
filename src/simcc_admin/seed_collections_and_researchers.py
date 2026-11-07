@@ -50,11 +50,11 @@ def run_seed(
     fomento_db_url: str = "postgresql://postgres:postgres@localhost:5432/fomento",
 ) -> None:
     settings = Settings()
-    admin_dsn = clean_dsn(settings.DATABASE_URL)
+    admin_dsn = clean_dsn(settings.ADMIN_DATABASE_URL)
     fomento_dsn = clean_dsn(fomento_db_url)
 
     logger.info("Conectando ao banco administrativo: %s", admin_dsn)
-    engine = create_engine(settings.DATABASE_URL)
+    engine = create_engine(settings.ADMIN_DATABASE_URL)
 
     with Session(engine) as session:
         # 1. Garante a coleção 'simcc' e 'fomento'
