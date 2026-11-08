@@ -1,4 +1,5 @@
 import io
+import json
 from http import HTTPStatus
 from uuid import UUID, uuid4
 
@@ -596,6 +597,309 @@ def test_export_parquet_does_not_conflict_with_researcher_id(client):
     # enquanto /export/parquet também retorna 401 mas não 422 de UUID inválido
     res_export = client.get(
         "/academic/researchers/export/parquet",
+        headers={"X-Service-Token": "invalid"},
+    )
+    assert res_export.status_code == HTTPStatus.UNAUTHORIZED
+    assert res_export.json() == {"detail": "Invalid service token"}
+
+
+# --- Testes de Exportação Parquet: Instituições ---
+
+
+def test_export_institutions_parquet_unauthorized(client):
+    response = client.get("/academic/institutions/export/parquet")
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+
+
+def test_export_institutions_parquet_invalid_service_token(client):
+    response = client.get(
+        "/academic/institutions/export/parquet",
+        headers={"X-Service-Token": "token-invalido"},
+    )
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+    assert response.json() == {"detail": "Invalid service token"}
+
+
+@pytest.mark.asyncio
+async def test_export_institutions_parquet_with_valid_service_token(
+    client, institution_generator
+):
+    settings = Settings()
+    await institution_generator(name="Universidade A", acronym="UNIA")
+    await institution_generator(name="Universidade B", acronym="UNIB")
+
+    response = client.get(
+        "/academic/institutions/export/parquet",
+        headers={"X-Service-Token": settings.ADMIN_SERVICE_TOKEN},
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert 'filename="institutions.parquet"' in response.headers["content-disposition"]
+
+    df = pl.read_parquet(io.BytesIO(response.content))
+    assert "name" in df.columns
+    assert "acronym" in df.columns
+    assert df["name"].to_list() == ["Universidade A", "Universidade B"]
+    assert df["acronym"].to_list() == ["UNIA", "UNIB"]
+
+
+@pytest.mark.asyncio
+async def test_export_institutions_parquet_with_admin_jwt(
+    admin_client, institution_generator
+):
+    await institution_generator(name="Universidade Admin", acronym="UNIADM")
+
+    response = admin_client.get("/academic/institutions/export/parquet")
+    assert response.status_code == HTTPStatus.OK
+    df = pl.read_parquet(io.BytesIO(response.content))
+    assert "UNIADM" in df["acronym"].to_list()
+
+
+def test_export_institutions_parquet_does_not_conflict_with_institution_id(client):
+    res_export = client.get(
+        "/academic/institutions/export/parquet",
+        headers={"X-Service-Token": "invalid"},
+    )
+    assert res_export.status_code == HTTPStatus.UNAUTHORIZED
+    assert res_export.json() == {"detail": "Invalid service token"}
+
+
+# --- Testes de Exportação Parquet: Coleções ---
+
+
+def test_export_collections_parquet_unauthorized(client):
+    response = client.get("/academic/collections/export/parquet")
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+
+
+def test_export_collections_parquet_invalid_service_token(client):
+    response = client.get(
+        "/academic/collections/export/parquet",
+        headers={"X-Service-Token": "token-invalido"},
+    )
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+    assert response.json() == {"detail": "Invalid service token"}
+
+
+@pytest.mark.asyncio
+async def test_export_collections_parquet_with_valid_service_token(
+    client, collection_generator
+):
+    settings = Settings()
+    col = await collection_generator(
+        slug="ciencia-dados",
+        name="Ciência de Dados",
+        description="Coleção de dados",
+        refresh_interval_days=7,
+        is_default=False,
+    )
+
+    response = client.get(
+        "/academic/collections/export/parquet",
+        headers={"X-Service-Token": settings.ADMIN_SERVICE_TOKEN},
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert 'filename="collections.parquet"' in response.headers["content-disposition"]
+
+    df = pl.read_parquet(io.BytesIO(response.content))
+    assert set(df.columns) == {
+        "id",
+        "slug",
+        "name",
+        "description",
+        "refresh_interval_days",
+        "is_default",
+        "created_at",
+    }
+    assert str(col.id) in df["id"].to_list()
+    assert "ciencia-dados" in df["slug"].to_list()
+    row = df.filter(pl.col("slug") == "ciencia-dados").to_dicts()[0]
+    assert row["name"] == "Ciência de Dados"
+    assert row["description"] == "Coleção de dados"
+    assert row["refresh_interval_days"] == 7
+    assert row["is_default"] is False
+
+
+@pytest.mark.asyncio
+async def test_export_collections_parquet_with_admin_jwt(
+    admin_client, collection_generator
+):
+    await collection_generator(slug="admin-col", name="Admin Coleção")
+
+    response = admin_client.get("/academic/collections/export/parquet")
+    assert response.status_code == HTTPStatus.OK
+    df = pl.read_parquet(io.BytesIO(response.content))
+    assert "admin-col" in df["slug"].to_list()
+
+
+def test_export_collections_parquet_does_not_conflict_with_collection_id(client):
+    res_export = client.get(
+        "/academic/collections/export/parquet",
+        headers={"X-Service-Token": "invalid"},
+    )
+    assert res_export.status_code == HTTPStatus.UNAUTHORIZED
+    assert res_export.json() == {"detail": "Invalid service token"}
+
+
+# --- Testes de Exportação Parquet: Vínculos Pesquisador ↔ Instituição ---
+
+
+def test_export_researcher_institutions_parquet_unauthorized(client):
+    response = client.get("/academic/researchers/institutions/export/parquet")
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+
+
+def test_export_researcher_institutions_parquet_invalid_service_token(client):
+    response = client.get(
+        "/academic/researchers/institutions/export/parquet",
+        headers={"X-Service-Token": "token-invalido"},
+    )
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+    assert response.json() == {"detail": "Invalid service token"}
+
+
+@pytest.mark.asyncio
+async def test_export_researcher_institutions_parquet_with_valid_service_token(
+    client,
+    researcher_generator,
+    institution_generator,
+    researcher_institution_generator,
+):
+    settings = Settings()
+    res1 = await researcher_generator(name="Pesquisador 1", lattes_id="1111000011110000")
+    res2 = await researcher_generator(name="Pesquisador 2", lattes_id="2222000022220000")
+    res_no_lattes = await researcher_generator(name="Sem Lattes", lattes_id="   ")
+
+    inst1 = await institution_generator(name="Instituto X", acronym="IX")
+    inst2 = await institution_generator(name="Instituto Y", acronym="IY")
+
+    await researcher_institution_generator(researcher_id=res1.id, institution_id=inst1.id)
+    await researcher_institution_generator(researcher_id=res1.id, institution_id=inst2.id)
+    await researcher_institution_generator(researcher_id=res2.id, institution_id=inst1.id)
+    await researcher_institution_generator(researcher_id=res_no_lattes.id, institution_id=inst1.id)
+
+    response = client.get(
+        "/academic/researchers/institutions/export/parquet",
+        headers={"X-Service-Token": settings.ADMIN_SERVICE_TOKEN},
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert 'filename="researcher_institutions.parquet"' in response.headers["content-disposition"]
+
+    df = pl.read_parquet(io.BytesIO(response.content))
+    assert "lattes_id" in df.columns
+    assert "acronym" in df.columns
+
+    rows = df.to_dicts()
+    assert len(rows) == 3
+    assert {"lattes_id": "1111000011110000", "acronym": "IX"} in rows
+    assert {"lattes_id": "1111000011110000", "acronym": "IY"} in rows
+    assert {"lattes_id": "2222000022220000", "acronym": "IX"} in rows
+
+
+@pytest.mark.asyncio
+async def test_export_researcher_institutions_parquet_with_admin_jwt(
+    admin_client,
+    researcher_generator,
+    institution_generator,
+    researcher_institution_generator,
+):
+    res = await researcher_generator(name="Pesquisador JWT", lattes_id="3333000033330000")
+    inst = await institution_generator(name="Instituto Z", acronym="IZ")
+    await researcher_institution_generator(researcher_id=res.id, institution_id=inst.id)
+
+    response = admin_client.get("/academic/researchers/institutions/export/parquet")
+    assert response.status_code == HTTPStatus.OK
+    df = pl.read_parquet(io.BytesIO(response.content))
+    assert {"lattes_id": "3333000033330000", "acronym": "IZ"} in df.to_dicts()
+
+
+def test_export_researcher_institutions_parquet_does_not_conflict_with_researcher_id(client):
+    res_export = client.get(
+        "/academic/researchers/institutions/export/parquet",
+        headers={"X-Service-Token": "invalid"},
+    )
+    assert res_export.status_code == HTTPStatus.UNAUTHORIZED
+    assert res_export.json() == {"detail": "Invalid service token"}
+
+
+# --- Testes de Exportação Parquet: Vínculos Pesquisador ↔ Coleção ---
+
+
+def test_export_researcher_collections_parquet_unauthorized(client):
+    response = client.get("/academic/researchers/collections/export/parquet")
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+
+
+def test_export_researcher_collections_parquet_invalid_service_token(client):
+    response = client.get(
+        "/academic/researchers/collections/export/parquet",
+        headers={"X-Service-Token": "token-invalido"},
+    )
+    assert response.status_code == HTTPStatus.UNAUTHORIZED
+    assert response.json() == {"detail": "Invalid service token"}
+
+
+@pytest.mark.asyncio
+async def test_export_researcher_collections_parquet_with_valid_service_token(
+    client,
+    researcher_generator,
+    collection_generator,
+    researcher_collection_generator,
+):
+    settings = Settings()
+    res = await researcher_generator(name="Pesquisador Col", lattes_id="4444000044440000")
+    col = await collection_generator(slug="colecao-teste", name="Coleção Teste")
+    await researcher_collection_generator(
+        researcher_id=res.id,
+        collection_id=col.id,
+        attributes={"cargo": "docente", "nivel": "titular"},
+    )
+
+    response = client.get(
+        "/academic/researchers/collections/export/parquet",
+        headers={"X-Service-Token": settings.ADMIN_SERVICE_TOKEN},
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert 'filename="researcher_collections.parquet"' in response.headers["content-disposition"]
+
+    df = pl.read_parquet(io.BytesIO(response.content))
+    assert set(df.columns) == {"lattes_id", "collection_id", "attributes", "created_at"}
+    rows = df.to_dicts()
+    assert len(rows) >= 1
+    match = [r for r in rows if r["lattes_id"] == "4444000044440000"]
+    assert len(match) == 1
+    assert match[0]["collection_id"] == str(col.id)
+    parsed_attrs = json.loads(match[0]["attributes"])
+    assert parsed_attrs == {"cargo": "docente", "nivel": "titular"}
+
+
+@pytest.mark.asyncio
+async def test_export_researcher_collections_parquet_with_admin_jwt(
+    admin_client,
+    researcher_generator,
+    collection_generator,
+    researcher_collection_generator,
+):
+    res = await researcher_generator(name="Pesquisador Col Admin", lattes_id="5555000055550000")
+    col = await collection_generator(slug="colecao-admin", name="Coleção Admin")
+    await researcher_collection_generator(
+        researcher_id=res.id,
+        collection_id=col.id,
+        attributes={},
+    )
+
+    response = admin_client.get("/academic/researchers/collections/export/parquet")
+    assert response.status_code == HTTPStatus.OK
+    df = pl.read_parquet(io.BytesIO(response.content))
+    assert "5555000055550000" in df["lattes_id"].to_list()
+
+
+def test_export_researcher_collections_parquet_does_not_conflict_with_researcher_id(client):
+    res_export = client.get(
+        "/academic/researchers/collections/export/parquet",
         headers={"X-Service-Token": "invalid"},
     )
     assert res_export.status_code == HTTPStatus.UNAUTHORIZED

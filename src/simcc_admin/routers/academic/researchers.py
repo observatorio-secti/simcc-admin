@@ -1,4 +1,5 @@
 import io
+import json
 import time
 from http import HTTPStatus
 from typing import Annotated, Any
@@ -130,6 +131,113 @@ async def export_researchers_parquet(
         media_type="application/octet-stream",
         headers={
             "Content-Disposition": 'attachment; filename="researchers.parquet"'
+        },
+    )
+
+
+@router.get(
+    "/institutions/export/parquet",
+    dependencies=[require_service_or_admin],
+    summary="Exporta vínculos entre pesquisadores e instituições em Parquet",
+)
+async def export_researcher_institutions_parquet(session: Session) -> Response:
+    stmt = (
+        select(Researcher.lattes_id, Institution.acronym)
+        .join(
+            ResearcherInstitution,
+            ResearcherInstitution.researcher_id == Researcher.id,
+        )
+        .join(
+            Institution,
+            ResearcherInstitution.institution_id == Institution.id,
+        )
+        .where(
+            Researcher.lattes_id.is_not(None),
+            func.trim(Researcher.lattes_id) != "",
+            Institution.acronym.is_not(None),
+            func.trim(Institution.acronym) != "",
+        )
+        .distinct()
+        .order_by(Researcher.lattes_id, Institution.acronym)
+    )
+    result = await session.execute(stmt)
+    rows = result.all()
+
+    df = pl.DataFrame(
+        {
+            "lattes_id": [r[0] for r in rows],
+            "acronym": [r[1] for r in rows],
+        },
+        schema={
+            "lattes_id": pl.Utf8,
+            "acronym": pl.Utf8,
+        },
+    )
+    buf = io.BytesIO()
+    df.write_parquet(buf, compression="zstd")
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": 'attachment; filename="researcher_institutions.parquet"'
+        },
+    )
+
+
+@router.get(
+    "/collections/export/parquet",
+    dependencies=[require_service_or_admin],
+    summary="Exporta vínculos entre pesquisadores e coleções em Parquet",
+)
+async def export_researcher_collections_parquet(session: Session) -> Response:
+    stmt = (
+        select(
+            Researcher.lattes_id,
+            ResearcherCollection.collection_id,
+            ResearcherCollection.attributes,
+            ResearcherCollection.created_at,
+        )
+        .join(
+            Researcher,
+            ResearcherCollection.researcher_id == Researcher.id,
+        )
+        .where(
+            Researcher.lattes_id.is_not(None),
+            func.trim(Researcher.lattes_id) != "",
+        )
+        .order_by(Researcher.lattes_id, ResearcherCollection.collection_id)
+    )
+    result = await session.execute(stmt)
+    rows = result.all()
+
+    df = pl.DataFrame(
+        {
+            "lattes_id": [r[0] for r in rows],
+            "collection_id": [str(r[1]) for r in rows],
+            "attributes": [
+                json.dumps(r[2])
+                if isinstance(r[2], (dict, list))
+                else (str(r[2]) if r[2] else "{}")
+                for r in rows
+            ],
+            "created_at": [r[3] for r in rows],
+        },
+        schema={
+            "lattes_id": pl.Utf8,
+            "collection_id": pl.Utf8,
+            "attributes": pl.Utf8,
+            "created_at": pl.Datetime,
+        },
+    )
+    buf = io.BytesIO()
+    df.write_parquet(buf, compression="zstd")
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": 'attachment; filename="researcher_collections.parquet"'
         },
     )
 

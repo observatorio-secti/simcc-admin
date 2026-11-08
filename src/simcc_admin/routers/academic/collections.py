@@ -1,9 +1,11 @@
+import io
 import time
 from http import HTTPStatus
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import polars as pl
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,14 +22,16 @@ from simcc_admin.schemas import (
     Pagination,
     Sort,
 )
-from simcc_admin.security import RequireRole
+from simcc_admin.security import RequireRole, RequireServiceTokenOrRole
 
 router = APIRouter(
     prefix="/collections",
     tags=["academic:collections"],
-    dependencies=[Depends(RequireRole(UserRole.ADMIN))],
 )
 Session = Annotated[AsyncSession, Depends(get_session)]
+
+require_admin = Depends(RequireRole(UserRole.ADMIN))
+require_service_or_admin = Depends(RequireServiceTokenOrRole(UserRole.ADMIN))
 
 
 def _subquery_member_count():
@@ -38,9 +42,67 @@ def _subquery_member_count():
     )
 
 
-@router.get("", response_model=GenericEnvelope[CollectionPublic])
 @router.get(
-    "/", response_model=GenericEnvelope[CollectionPublic], include_in_schema=False
+    "/export/parquet",
+    dependencies=[require_service_or_admin],
+    summary="Exporta todas as coleções em formato Parquet",
+)
+async def export_collections_parquet(session: Session) -> Response:
+    stmt = select(
+        Collection.id,
+        Collection.slug,
+        Collection.name,
+        Collection.description,
+        Collection.refresh_interval_days,
+        Collection.is_default,
+        Collection.created_at,
+    ).order_by(Collection.slug)
+
+    result = await session.execute(stmt)
+    rows = result.all()
+
+    df = pl.DataFrame(
+        {
+            "id": [str(r[0]) for r in rows],
+            "slug": [r[1] for r in rows],
+            "name": [r[2] for r in rows],
+            "description": [r[3] for r in rows],
+            "refresh_interval_days": [int(r[4]) for r in rows],
+            "is_default": [bool(r[5]) for r in rows],
+            "created_at": [r[6] for r in rows],
+        },
+        schema={
+            "id": pl.Utf8,
+            "slug": pl.Utf8,
+            "name": pl.Utf8,
+            "description": pl.Utf8,
+            "refresh_interval_days": pl.Int64,
+            "is_default": pl.Boolean,
+            "created_at": pl.Datetime,
+        },
+    )
+    buf = io.BytesIO()
+    df.write_parquet(buf, compression="zstd")
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": 'attachment; filename="collections.parquet"'
+        },
+    )
+
+
+@router.get(
+    "",
+    response_model=GenericEnvelope[CollectionPublic],
+    dependencies=[require_admin],
+)
+@router.get(
+    "/",
+    response_model=GenericEnvelope[CollectionPublic],
+    dependencies=[require_admin],
+    include_in_schema=False,
 )
 async def list_collections(
     session: Session,
@@ -106,7 +168,11 @@ async def list_collections(
     )
 
 
-@router.get("/{collection_id}", response_model=CollectionPublic)
+@router.get(
+    "/{collection_id}",
+    response_model=CollectionPublic,
+    dependencies=[require_admin],
+)
 async def get_collection(collection_id: UUID, session: Session):
     member_count_subq = _subquery_member_count().label("researcher_count")
     query = select(Collection, member_count_subq).where(
@@ -131,11 +197,17 @@ async def get_collection(collection_id: UUID, session: Session):
     )
 
 
-@router.post("", status_code=HTTPStatus.CREATED, response_model=CollectionPublic)
+@router.post(
+    "",
+    status_code=HTTPStatus.CREATED,
+    response_model=CollectionPublic,
+    dependencies=[require_admin],
+)
 @router.post(
     "/",
     status_code=HTTPStatus.CREATED,
     response_model=CollectionPublic,
+    dependencies=[require_admin],
     include_in_schema=False,
 )
 async def create_collection(payload: CollectionCreate, session: Session):
@@ -180,7 +252,11 @@ async def create_collection(payload: CollectionCreate, session: Session):
     )
 
 
-@router.put("/{collection_id}", response_model=CollectionPublic)
+@router.put(
+    "/{collection_id}",
+    response_model=CollectionPublic,
+    dependencies=[require_admin],
+)
 async def update_collection(
     collection_id: UUID, payload: CollectionUpdate, session: Session
 ):
@@ -221,7 +297,11 @@ async def update_collection(
     return await get_collection(collection_id, session)
 
 
-@router.delete("/{collection_id}", response_model=Message)
+@router.delete(
+    "/{collection_id}",
+    response_model=Message,
+    dependencies=[require_admin],
+)
 async def delete_collection(collection_id: UUID, session: Session):
     col = await session.scalar(
         select(Collection).where(Collection.id == collection_id)

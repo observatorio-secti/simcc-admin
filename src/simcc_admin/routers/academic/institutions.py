@@ -1,9 +1,11 @@
+import io
 import time
 from http import HTTPStatus
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import polars as pl
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,19 +22,66 @@ from simcc_admin.schemas import (
     Pagination,
     Sort,
 )
-from simcc_admin.security import RequireRole
+from simcc_admin.security import RequireRole, RequireServiceTokenOrRole
 
 router = APIRouter(
     prefix="/institutions",
     tags=["academic:institutions"],
-    dependencies=[Depends(RequireRole(UserRole.ADMIN))],
 )
 Session = Annotated[AsyncSession, Depends(get_session)]
 
+require_admin = Depends(RequireRole(UserRole.ADMIN))
+require_service_or_admin = Depends(RequireServiceTokenOrRole(UserRole.ADMIN))
 
-@router.get("", response_model=GenericEnvelope[InstitutionPublic])
+
 @router.get(
-    "/", response_model=GenericEnvelope[InstitutionPublic], include_in_schema=False
+    "/export/parquet",
+    dependencies=[require_service_or_admin],
+    summary="Exporta catálogo de instituições em formato Parquet",
+)
+async def export_institutions_parquet(session: Session) -> Response:
+    stmt = (
+        select(Institution.name, Institution.acronym)
+        .where(
+            Institution.name.is_not(None) | Institution.acronym.is_not(None)
+        )
+        .order_by(Institution.name)
+    )
+    result = await session.execute(stmt)
+    rows = result.all()
+
+    df = pl.DataFrame(
+        {
+            "name": [r[0] for r in rows],
+            "acronym": [r[1] for r in rows],
+        },
+        schema={
+            "name": pl.Utf8,
+            "acronym": pl.Utf8,
+        },
+    )
+    buf = io.BytesIO()
+    df.write_parquet(buf, compression="zstd")
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": 'attachment; filename="institutions.parquet"'
+        },
+    )
+
+
+@router.get(
+    "",
+    response_model=GenericEnvelope[InstitutionPublic],
+    dependencies=[require_admin],
+)
+@router.get(
+    "/",
+    response_model=GenericEnvelope[InstitutionPublic],
+    dependencies=[require_admin],
+    include_in_schema=False,
 )
 async def list_institutions(
     session: Session,
@@ -82,7 +131,11 @@ async def list_institutions(
     )
 
 
-@router.get("/{institution_id}", response_model=InstitutionPublic)
+@router.get(
+    "/{institution_id}",
+    response_model=InstitutionPublic,
+    dependencies=[require_admin],
+)
 async def get_institution(institution_id: UUID, session: Session):
     institution = await session.scalar(
         select(Institution).where(Institution.id == institution_id)
@@ -94,11 +147,17 @@ async def get_institution(institution_id: UUID, session: Session):
     return institution
 
 
-@router.post("", status_code=HTTPStatus.CREATED, response_model=InstitutionPublic)
+@router.post(
+    "",
+    status_code=HTTPStatus.CREATED,
+    response_model=InstitutionPublic,
+    dependencies=[require_admin],
+)
 @router.post(
     "/",
     status_code=HTTPStatus.CREATED,
     response_model=InstitutionPublic,
+    dependencies=[require_admin],
     include_in_schema=False,
 )
 async def create_institution(payload: InstitutionCreate, session: Session):
@@ -122,7 +181,11 @@ async def create_institution(payload: InstitutionCreate, session: Session):
     return institution
 
 
-@router.put("/{institution_id}", response_model=InstitutionPublic)
+@router.put(
+    "/{institution_id}",
+    response_model=InstitutionPublic,
+    dependencies=[require_admin],
+)
 async def update_institution(
     institution_id: UUID, payload: InstitutionUpdate, session: Session
 ):
@@ -148,7 +211,11 @@ async def update_institution(
         ) from e
 
 
-@router.delete("/{institution_id}", response_model=Message)
+@router.delete(
+    "/{institution_id}",
+    response_model=Message,
+    dependencies=[require_admin],
+)
 async def delete_institution(institution_id: UUID, session: Session):
     institution = await session.scalar(
         select(Institution).where(Institution.id == institution_id)
