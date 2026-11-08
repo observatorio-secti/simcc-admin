@@ -8,11 +8,13 @@ Esta pasta contém os dados de carga inicial (seeds) e anotações oficiais de p
 
 ```
 storage/seed/researchers/
-├── README.md        # Este documento de referência
-├── simcc.csv        # Base consolidada de pesquisadores do SimCC (~12.145 linhas)
-├── ebmsp.csv        # Lista anotada oficial da EBMSP (552 registros)
-├── ufob.csv         # Lista anotada oficial da UFOB (365 registros)
-└── ufrb.csv         # Lista anotada oficial da UFRB (911 registros)
+├── README.md               # Este documento de referência
+├── simcc.csv               # Base consolidada de pesquisadores do SimCC (~12.145 linhas)
+├── ebmsp.csv               # Lista anotada oficial da EBMSP (552 registros)
+├── ufob.csv                # Lista anotada oficial da UFOB (365 registros)
+├── ufrb.csv                # Lista anotada oficial da UFRB (911 registros)
+├── fapesb.csv              # Pesquisadores Fapesb/Fomento com nomes enriquecidos (32.856 registros)
+└── fapesb_sem_nome.txt     # Relação de Lattes IDs do Fapesb sem correspondência de nome (1.317 registros)
 ```
 
 ---
@@ -83,3 +85,12 @@ O processo de carga em banco zerado segue duas fases principais, executadas pref
 3. Inserir os novos pesquisadores em `academic.researchers` usando `ON CONFLICT (lattes_id) DO NOTHING` (mantendo os dados da Fase 1 intactos).
 4. Inserir os vínculos institucionais em `academic.researcher_institutions` com filtro `WHERE acronym <> 'EXTERNA'`.
 5. Garantir que todos os pesquisadores novos estejam vinculados à coleção `simcc` em `academic.researcher_collections`.
+
+### Fase 3: Carga do Fomento Fapesb (`fapesb.csv`)
+
+1. Carregar `fapesb.csv` (delimitador `,`) para tabela temporária de staging.
+2. Filtrar apenas os registros que possuem `name` preenchido (os 1.317 registros sem nome listados em `fapesb_sem_nome.txt` permanecem fora até resolução).
+3. Inserir os novos pesquisadores em `academic.researchers` com `ON CONFLICT (lattes_id) DO NOTHING` (preservando nomes existentes).
+4. **Sem vínculo institucional:** Não criar registros em `academic.researcher_institutions` para os pesquisadores originários exclusivamente da Fapesb.
+5. **Vínculo com a coleção `fomento`:** Inserir os 31.539 pesquisadores com nome em `academic.researcher_collections` associados à coleção `fomento` (`slug = 'fomento'`). Pesquisadores já pertencentes à coleção `simcc` mantêm ambos os vínculos ativos simultaneamente.
+
