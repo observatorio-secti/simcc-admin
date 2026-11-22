@@ -3,7 +3,7 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Message(BaseModel):
@@ -147,7 +147,7 @@ class ResearcherUpdate(BaseModel):
 
 
 class ResearcherItem(BaseModel):
-    researcher_id: UUID
+    id: UUID
     name: str
     lattes_id: str
     created_at: datetime
@@ -170,25 +170,70 @@ class ResearcherSearchResponse(BaseModel):
     summary: dict[str, Any] | None = None
 
 
-from simcc_admin.models import UserRole
-
-# --- Schemas de Usuários (com UUID) ---
+# --- Schemas de Autenticação, Admins e ETL ---
 
 
-class UserSchema(BaseModel):
-    username: str
-    email: EmailStr
-    password: str
+class ErrorDetail(BaseModel):
+    detail: str
 
 
-class UserPublic(BaseModel):
+class MeUser(BaseModel):
+    sub: str
+    name: str | None = None
+    email: str | None = None
+
+
+class MeResponse(BaseModel):
+    user: MeUser
+    is_admin: bool
+
+
+class AdminCreate(BaseModel):
+    sub: str = Field(min_length=1)
+    name: str | None = None
+    email: str | None = None
+
+
+class AdminPublic(BaseModel):
     id: UUID
-    username: str
-    email: EmailStr | None = None
-    role: UserRole = UserRole.DEFAULT
+    sub: str
+    name: str | None = None
+    email: str | None = None
+    created_at: datetime
+    created_by: str | None = None
     model_config = ConfigDict(from_attributes=True)
 
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str
+class EtlRunTriggerRequest(BaseModel):
+    routines: list[str] | None = None
+    lattes_ids: list[str] | None = None
+    force: bool = False
+
+
+class EtlRunTriggerResponse(BaseModel):
+    run_id: UUID
+    status: str
+
+
+class EtlRunDetail(BaseModel):
+    id: UUID
+    status: str
+    started_at: datetime
+    ended_at: datetime | None = None
+    triggered_by: str
+    current_routine: str | None = None
+    routines: list[str] = Field(default_factory=list)
+    lattes_ids: list[str] | None = None
+    steps: dict[str, Any] = Field(default_factory=dict)
+    error_message: str | None = None
+
+
+class EtlRunListResponse(BaseModel):
+    data: list[EtlRunDetail]
+    pagination: Pagination
+
+
+class EtlRunLogsResponse(BaseModel):
+    lines: list[dict[str, Any]]
+    next_offset: int
+    status: str

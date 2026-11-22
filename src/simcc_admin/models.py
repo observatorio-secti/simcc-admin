@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
 from typing import ClassVar
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
     CheckConstraint,
+    DateTime,
     ForeignKey,
     Index,
+    Text,
     UniqueConstraint,
     func,
     text,
@@ -25,9 +26,23 @@ from sqlalchemy.orm import (
 table_registry = registry()
 
 
-class UserRole(str, Enum):
-    DEFAULT = "DEFAULT"
-    ADMIN = "ADMIN"
+@mapped_as_dataclass(table_registry)
+class Admin:
+    __tablename__ = "admins"
+
+    id: Mapped[UUID] = mapped_column(
+        init=False,
+        primary_key=True,
+        default_factory=uuid4,
+        server_default=func.gen_random_uuid(),
+    )
+    sub: Mapped[str] = mapped_column(Text, unique=True, index=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    email: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), init=False, server_default=func.now()
+    )
+    created_by: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
 
 
 # --- Schema Academic ---

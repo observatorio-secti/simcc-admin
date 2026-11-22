@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from simcc_admin.routers import academic
+from simcc_admin.routers import academic, admins, etl, me
 from simcc_admin.settings import Settings
 
 settings = Settings()
@@ -46,12 +46,15 @@ app.add_middleware(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(me.router)
+app.include_router(admins.router)
+app.include_router(etl.router)
 app.include_router(academic.router)
 
 

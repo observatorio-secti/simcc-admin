@@ -46,3 +46,19 @@ def test_custom_root_path_app():
     docs_res = custom_client.get("/docs")
     assert docs_res.status_code == 200
     assert "url: '/simcc/admin/openapi.json'" in docs_res.text
+
+
+def test_openapi_includes_new_routes():
+    res = client.get("/openapi.json")
+    assert res.status_code == 200
+    paths = res.json()["paths"]
+    for expected in (
+        "/me",
+        "/admins",
+        "/admins/{admin_id}",
+        "/etl/routines",
+        "/etl/runs",
+        "/etl/runs/{run_id}",
+        "/etl/runs/{run_id}/logs",
+    ):
+        assert expected in paths

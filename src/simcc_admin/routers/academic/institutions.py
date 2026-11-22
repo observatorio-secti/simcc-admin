@@ -11,7 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from simcc_admin.database import get_session
-from simcc_admin.models import Institution, UserRole
+from simcc_admin.models import Institution
 from simcc_admin.schemas import (
     GenericEnvelope,
     InstitutionCreate,
@@ -22,7 +22,8 @@ from simcc_admin.schemas import (
     Pagination,
     Sort,
 )
-from simcc_admin.security import RequireRole, RequireServiceTokenOrRole
+from simcc_admin.security import RequireServiceTokenOrAdmin
+from simcc_admin.security import require_admin as check_admin
 
 router = APIRouter(
     prefix="/institutions",
@@ -30,8 +31,8 @@ router = APIRouter(
 )
 Session = Annotated[AsyncSession, Depends(get_session)]
 
-require_admin = Depends(RequireRole(UserRole.ADMIN))
-require_service_or_admin = Depends(RequireServiceTokenOrRole(UserRole.ADMIN))
+require_admin = Depends(check_admin)
+require_service_or_admin = Depends(RequireServiceTokenOrAdmin())
 
 
 @router.get(

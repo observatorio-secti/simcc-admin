@@ -19,7 +19,6 @@ from simcc_admin.models import (
     Researcher,
     ResearcherCollection,
     ResearcherInstitution,
-    UserRole,
 )
 from simcc_admin.schemas import (
     Affiliation,
@@ -37,7 +36,8 @@ from simcc_admin.schemas import (
     ResearcherUpdate,
     Sort,
 )
-from simcc_admin.security import RequireRole, RequireServiceTokenOrRole
+from simcc_admin.security import RequireServiceTokenOrAdmin
+from simcc_admin.security import require_admin as check_admin
 
 router = APIRouter(
     prefix="/researchers",
@@ -45,8 +45,8 @@ router = APIRouter(
 )
 Session = Annotated[AsyncSession, Depends(get_session)]
 
-require_admin = Depends(RequireRole(UserRole.ADMIN))
-require_service_or_admin = Depends(RequireServiceTokenOrRole(UserRole.ADMIN))
+require_admin = Depends(check_admin)
+require_service_or_admin = Depends(RequireServiceTokenOrAdmin())
 
 
 def _build_affiliations(
@@ -325,7 +325,7 @@ async def search_researchers(
 
     items = [
         ResearcherItem(
-            researcher_id=r.id,
+            id=r.id,
             name=r.name,
             lattes_id=r.lattes_id,
             created_at=r.created_at,
@@ -375,7 +375,7 @@ async def get_researcher(researcher_id: UUID, session: Session):
         )
 
     return ResearcherDetail(
-        researcher_id=researcher.id,
+        id=researcher.id,
         name=researcher.name,
         lattes_id=researcher.lattes_id,
         created_at=researcher.created_at,

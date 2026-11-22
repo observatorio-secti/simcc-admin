@@ -116,7 +116,7 @@ async def test_search_researchers_filter_by_name(admin_client, researcher_genera
 
     assert len(body["data"]) == 1
     assert body["data"][0]["name"] == "Maria Silva"
-    assert body["data"][0]["researcher_id"] == str(r1.id)
+    assert body["data"][0]["id"] == str(r1.id)
     assert body["filters_applied"]["q"] == "silva"
 
 
@@ -132,7 +132,7 @@ async def test_search_researchers_filter_by_lattes(admin_client, researcher_gene
     assert len(body["data"]) == 1
     assert body["data"][0]["name"] == "Carlos Lima"
     assert body["data"][0]["lattes_id"] == "1234567890123456"
-    assert body["data"][0]["researcher_id"] == str(r1.id)
+    assert body["data"][0]["id"] == str(r1.id)
 
 
 @pytest.mark.asyncio
@@ -347,7 +347,7 @@ async def test_get_researcher_detail(
     resp = admin_client.get(f"/academic/researchers/{res.id}")
     assert resp.status_code == HTTPStatus.OK
     body = resp.json()
-    assert body["researcher_id"] == str(res.id)
+    assert body["id"] == str(res.id)
     assert body["name"] == "Cientista"
     assert len(body["affiliations"]) == 1
     assert body["affiliations"][0]["institution"]["acronym"] == "FIOCRUZ"

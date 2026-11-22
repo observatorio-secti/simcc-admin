@@ -2,7 +2,6 @@ import secrets
 from dataclasses import dataclass
 from http import HTTPStatus
 from typing import Annotated
-from uuid import UUID
 
 from fastapi import Depends, Header, HTTPException
 from fastapi.security import OAuth2PasswordBearer
@@ -13,8 +12,11 @@ from jwt import (
     PyJWKClient,
     decode,
 )
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from simcc_admin.models import UserRole
+from simcc_admin.database import get_session
+from simcc_admin.models import Admin
 from simcc_admin.settings import Settings
 
 settings = Settings()
@@ -37,24 +39,24 @@ def get_jwks_client() -> PyJWKClient:
 
 @dataclass
 class AuthenticatedUser:
-    """Representação em memória do usuário autenticado validado via token do IdP."""
+    """Representação em memória do usuário autenticado via token do IdP e tabela admins."""
 
-    id: UUID
-    email: str | None
+    sub: str
     name: str | None
-    role: UserRole
+    email: str | None
+    is_admin: bool = False
 
 
 def decode_idp_token(token: str) -> dict:
-    """Decodifica e valida a assinatura RS256 do token emitido pelo Observatório IdP."""
+    """Decodifica e valida assinatura RS256, issuer e audience do token do IdP."""
     if settings.IDP_PUBLIC_KEY_PEM.strip():
         return decode(
             token,
             settings.IDP_PUBLIC_KEY_PEM.strip(),
             algorithms=["RS256"],
             issuer=settings.IDP_ISSUER,
-            options={"verify_aud": bool(settings.IDP_AUDIENCE)},
             audience=settings.IDP_AUDIENCE,
+            options={"verify_aud": True},
         )
 
     client = get_jwks_client()
@@ -64,13 +66,21 @@ def decode_idp_token(token: str) -> dict:
         signing_key.key,
         algorithms=["RS256"],
         issuer=settings.IDP_ISSUER,
-        options={"verify_aud": bool(settings.IDP_AUDIENCE)},
         audience=settings.IDP_AUDIENCE,
+        options={"verify_aud": True},
     )
 
 
-async def get_user_from_raw_token(token: str) -> AuthenticatedUser:
-    """Extrai e valida os dados de identidade diretamente do token RS256 de forma stateless."""
+async def _is_sub_admin(session: AsyncSession, sub: str) -> bool:
+    admin_id = await session.scalar(select(Admin.id).where(Admin.sub == sub))
+    return admin_id is not None
+
+
+async def get_user_from_raw_token(
+    token: str,
+    session: AsyncSession | None = None,
+) -> AuthenticatedUser:
+    """Valida o token RS256 e consulta a tabela admins quando uma sessão é fornecida."""
     credentials_exception = HTTPException(
         status_code=HTTPStatus.UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -80,70 +90,46 @@ async def get_user_from_raw_token(token: str) -> AuthenticatedUser:
     try:
         payload = decode_idp_token(token)
         subject = payload.get("sub")
-        if not subject:
+        if not subject or not str(subject).strip():
             raise credentials_exception
-        user_id = UUID(str(subject))
+        sub = str(subject).strip()
     except (DecodeError, ExpiredSignatureError, InvalidTokenError, ValueError):
         raise credentials_exception
 
-    email = payload.get("email")
-    name = payload.get("name")
-    raw_role = payload.get("role", "DEFAULT")
-    role = UserRole.ADMIN if str(raw_role).upper() == "ADMIN" else UserRole.DEFAULT
+    is_admin = await _is_sub_admin(session, sub) if session is not None else False
 
     return AuthenticatedUser(
-        id=user_id,
-        email=email,
-        name=name,
-        role=role,
+        sub=sub,
+        name=payload.get("name"),
+        email=payload.get("email"),
+        is_admin=is_admin,
     )
 
 
 async def get_current_user(
     token: Annotated[str, Depends(oauth2_scheme)],
+    session: Annotated[AsyncSession, Depends(get_session)],
 ) -> AuthenticatedUser:
-    return await get_user_from_raw_token(token)
+    return await get_user_from_raw_token(token, session=session)
 
 
-# Hierarquia extensível de permissões de cargos
-ROLE_HIERARCHY: dict[UserRole, set[UserRole]] = {
-    UserRole.ADMIN: {UserRole.ADMIN, UserRole.DEFAULT},
-    UserRole.DEFAULT: {UserRole.DEFAULT},
-}
-
-
-class RequireRole:
-    """Dependência genérica reutilizável para proteção de endpoints por cargos."""
-
-    def __init__(self, *allowed_roles: UserRole, check_hierarchy: bool = True):
-        self.allowed_roles = set(allowed_roles)
-        self.check_hierarchy = check_hierarchy
-
-    async def __call__(
-        self, current_user: Annotated[AuthenticatedUser, Depends(get_current_user)]
-    ) -> AuthenticatedUser:
-        effective_roles = (
-            ROLE_HIERARCHY.get(current_user.role, {current_user.role})
-            if self.check_hierarchy
-            else {current_user.role}
+async def require_admin(
+    current_user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+) -> AuthenticatedUser:
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=HTTPStatus.FORBIDDEN,
+            detail="Not enough permissions",
         )
-        if not self.allowed_roles.intersection(effective_roles):
-            raise HTTPException(
-                status_code=HTTPStatus.FORBIDDEN,
-                detail="Not enough permissions",
-            )
-        return current_user
+    return current_user
 
 
-class RequireServiceTokenOrRole:
-    """Permite acesso via X-Service-Token ou por usuário com cargo permitido."""
-
-    def __init__(self, *allowed_roles: UserRole, check_hierarchy: bool = True):
-        self.allowed_roles = set(allowed_roles)
-        self.check_hierarchy = check_hierarchy
+class RequireServiceTokenOrAdmin:
+    """Permite acesso via X-Service-Token ou por usuário presente na tabela admins."""
 
     async def __call__(
         self,
+        session: Annotated[AsyncSession, Depends(get_session)],
         x_service_token: Annotated[str | None, Header()] = None,
         token: Annotated[str | None, Depends(oauth2_optional_scheme)] = None,
     ) -> bool:
@@ -156,13 +142,8 @@ class RequireServiceTokenOrRole:
             )
 
         if token:
-            user = await get_user_from_raw_token(token)
-            effective_roles = (
-                ROLE_HIERARCHY.get(user.role, {user.role})
-                if self.check_hierarchy
-                else {user.role}
-            )
-            if not self.allowed_roles.intersection(effective_roles):
+            user = await get_user_from_raw_token(token, session=session)
+            if not user.is_admin:
                 raise HTTPException(
                     status_code=HTTPStatus.FORBIDDEN,
                     detail="Not enough permissions",
@@ -176,4 +157,4 @@ class RequireServiceTokenOrRole:
         )
 
 
-AdminUser = Annotated[AuthenticatedUser, Depends(RequireRole(UserRole.ADMIN))]
+AdminUser = Annotated[AuthenticatedUser, Depends(require_admin)]

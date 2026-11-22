@@ -13,7 +13,7 @@ from testcontainers.postgres import PostgresContainer
 
 from simcc_admin.app import app
 from simcc_admin.database import get_session
-from simcc_admin.models import UserRole, table_registry
+from simcc_admin.models import Admin, table_registry
 from simcc_admin.security import AuthenticatedUser, settings
 from tests.factories import (
     CollectionFactory,
@@ -94,46 +94,53 @@ async def session(engine):
 @pytest.fixture
 def user():
     return AuthenticatedUser(
-        id=uuid4(),
+        sub=str(uuid4()),
         email="user@simcc.org",
         name="Usuário Padrão",
-        role=UserRole.DEFAULT,
+        is_admin=False,
     )
 
 
 @pytest.fixture
 def other_user():
     return AuthenticatedUser(
-        id=uuid4(),
+        sub=str(uuid4()),
         email="other@simcc.org",
         name="Outro Usuário",
-        role=UserRole.DEFAULT,
+        is_admin=False,
     )
 
 
 @pytest.fixture
 def admin_user():
     return AuthenticatedUser(
-        id=uuid4(),
+        sub=str(uuid4()),
         email="admin@simcc.org",
         name="Administrador SimCC",
-        role=UserRole.ADMIN,
+        is_admin=True,
     )
 
 
 @pytest.fixture
 def token_generator(rsa_private_key):
-    def _generate(user: AuthenticatedUser) -> str:
+    def _generate(
+        user: AuthenticatedUser,
+        *,
+        aud: str | None = None,
+        extra_claims: dict | None = None,
+    ) -> str:
         now = datetime.now(UTC)
         payload = {
             "iss": settings.IDP_ISSUER,
-            "sub": str(user.id),
+            "aud": aud if aud is not None else settings.IDP_AUDIENCE,
+            "sub": user.sub,
             "email": user.email,
             "name": user.name,
-            "role": user.role.value,
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(hours=1)).timestamp()),
         }
+        if extra_claims:
+            payload.update(extra_claims)
         return jwt.encode(payload, rsa_private_key, algorithm="RS256")
 
     return _generate
@@ -144,13 +151,27 @@ def token(token_generator, user):
     return token_generator(user)
 
 
+@pytest_asyncio.fixture
+async def admin_record(session, admin_user):
+    admin = Admin(
+        sub=admin_user.sub,
+        name=admin_user.name,
+        email=admin_user.email,
+        created_by="test-fixture",
+    )
+    session.add(admin)
+    await session.commit()
+    await session.refresh(admin)
+    return admin
+
+
 @pytest.fixture
 def admin_token(token_generator, admin_user):
     return token_generator(admin_user)
 
 
 @pytest.fixture
-def admin_client(session, admin_token):
+def admin_client(session, admin_record, admin_token):
     def get_session_override():
         return session
 
